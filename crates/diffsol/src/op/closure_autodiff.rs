@@ -20,8 +20,8 @@ pub struct ClosureAutodiff<M: Matrix, F> {
     nout: usize,
     nparams: usize,
     statistics: RefCell<OpStatistics>,
-    tmp_nstates: RefCell<M::V>,
-    tmp_nstates2: RefCell<M::V>,
+    tmp_nout: RefCell<M::V>,
+    tmp_nout2: RefCell<M::V>,
     ctx: M::C,
     _phantom: PhantomData<M>,
 }
@@ -33,8 +33,8 @@ impl<M: Matrix, F> ClosureAutodiff<M, F> {
             nstates,
             nout,
             nparams,
-            tmp_nstates: RefCell::new(M::V::zeros(nstates, ctx.clone())),
-            tmp_nstates2: RefCell::new(M::V::zeros(nstates, ctx.clone())),
+            tmp_nout: RefCell::new(M::V::zeros(nout, ctx.clone())),
+            tmp_nout2: RefCell::new(M::V::zeros(nout, ctx.clone())),
             statistics: RefCell::new(OpStatistics::default()),
             ctx,
             _phantom: PhantomData,
@@ -75,11 +75,11 @@ impl<M: Matrix, F> BuilderOp for ClosureAutodiff<M, F> {
     }
     fn set_nstates(&mut self, nstates: usize) {
         self.nstates = nstates;
-        self.tmp_nstates = RefCell::new(M::V::zeros(nstates, self.ctx.clone()));
-        self.tmp_nstates2 = RefCell::new(M::V::zeros(nstates, self.ctx.clone()));
     }
     fn set_nout(&mut self, nout: usize) {
         self.nout = nout;
+        self.tmp_nout = RefCell::new(M::V::zeros(nout, self.ctx.clone()));
+        self.tmp_nout2 = RefCell::new(M::V::zeros(nout, self.ctx.clone()));
     }
     fn set_nparams(&mut self, nparams: usize) {
         self.nparams = nparams;
@@ -117,8 +117,8 @@ mod autodiff_impl {
     {
         fn jac_mul_inplace(&self, x: &M::V, t: M::T, v: &M::V, y: &mut M::V) -> OperatorResult {
             self.op.statistics.borrow_mut().increment_jac_mul();
-            let mut tmp_nstates = self.op.tmp_nstates.borrow_mut();
-            self.op.call_jvp(x, v, self.p, t, &mut tmp_nstates, y);
+            let mut tmp_nout = self.op.tmp_nout.borrow_mut();
+            self.op.call_jvp(x, v, self.p, t, &mut tmp_nout, y);
             Ok(())
         }
         fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
@@ -134,8 +134,8 @@ mod autodiff_impl {
         for ParameterisedOp<'_, ClosureAutodiff<M, F>>
     {
         fn sens_mul_inplace(&self, x: &M::V, t: M::T, v: &M::V, y: &mut M::V) {
-            let mut tmp_nstates = self.op.tmp_nstates.borrow_mut();
-            self.op.call_sens_jvp(x, self.p, v, t, &mut tmp_nstates, y);
+            let mut tmp_nout = self.op.tmp_nout.borrow_mut();
+            self.op.call_sens_jvp(x, self.p, v, t, &mut tmp_nout, y);
         }
     }
 
@@ -144,12 +144,12 @@ mod autodiff_impl {
     {
         fn jac_transpose_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
             self.op.statistics.borrow_mut().increment_jac_adj_mul();
-            let mut tmp_nstates = self.op.tmp_nstates.borrow_mut();
-            let mut tmp_nstates2 = self.op.tmp_nstates2.borrow_mut();
-            tmp_nstates.copy_from(v);
+            let mut tmp_nout = self.op.tmp_nout.borrow_mut();
+            let mut tmp_nout2 = self.op.tmp_nout2.borrow_mut();
+            tmp_nout.copy_from(v);
             y.fill(M::T::zero());
             self.op
-                .call_vjp(x, y, self.p, t, &mut tmp_nstates2, &mut tmp_nstates);
+                .call_vjp(x, y, self.p, t, &mut tmp_nout2, &mut tmp_nout);
             y.mul_assign(Scale(-M::T::one()));
         }
         fn adjoint_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
@@ -170,12 +170,12 @@ mod autodiff_impl {
             v: &Self::V,
             y: &mut Self::V,
         ) {
-            let mut tmp_nstates = self.op.tmp_nstates.borrow_mut();
-            let mut tmp_nstates2 = self.op.tmp_nstates2.borrow_mut();
-            tmp_nstates.copy_from(&v);
+            let mut tmp_nout = self.op.tmp_nout.borrow_mut();
+            let mut tmp_nout2 = self.op.tmp_nout2.borrow_mut();
+            tmp_nout.copy_from(&v);
             y.fill(M::T::zero());
             self.op
-                .call_sens_vjp(x, self.p, y, t, &mut tmp_nstates2, &mut tmp_nstates);
+                .call_sens_vjp(x, self.p, y, t, &mut tmp_nout2, &mut tmp_nout);
             y.mul_assign(Scale(-M::T::one()));
         }
         fn sens_adjoint_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {

@@ -99,9 +99,6 @@ impl<V: Vector> StateRefMut<'_, V> {
             .unwrap()
             .matrix(ode_problem.t0)?
             .partition_indices_by_zero_diagonal();
-        if algebraic_indices.is_empty() {
-            return Ok(());
-        }
 
         // equations are:
         // h(t, u, v, du) = 0
@@ -200,9 +197,6 @@ impl<V: Vector> StateRefMut<'_, V> {
             .unwrap()
             .matrix(ode_problem.t0)?
             .partition_indices_by_zero_diagonal();
-        if algebraic_indices.is_empty() {
-            return Ok(());
-        }
 
         for i in 0..naug {
             augmented_eqn.set_index(i);
@@ -1094,7 +1088,14 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
         let t = ode_problem.t0;
         let h = ode_problem.h0;
         let y = ode_problem.eqn.init().call(t);
-        let dy = ode_problem.eqn.rhs().call(&y, t)?;
+        let dy = if ode_problem.eqn.mass().is_some() {
+            // For M y' = f(t, y), f is not the state derivative unless M is
+            // identity.  Leave a neutral initial guess for set_consistent to
+            // solve, and do not evaluate the RHS at an uncorrected algebraic y.
+            V::zeros(y.len(), y.context().clone())
+        } else {
+            ode_problem.eqn.rhs().call(&y, t)?
+        };
         let (s, ds) = (vec![], vec![]);
         let (dg, g) = if ode_problem.integrate_out {
             if let Some(out) = ode_problem.eqn.out() {
@@ -1296,9 +1297,11 @@ mod test {
         },
         op::closure_with_sens::ClosureWithSens,
         BdfState, LinearSolver, Matrix, NalgebraLU, NonLinearOp, NonLinearOpTimePartial,
-        OdeBuilder, OdeEquations, OdeSolverState, ParameterisedOp, Vector, VectorHost,
+        OdeBuilder, OdeEquations, OdeSolverState, OperatorError, ParameterisedOp, Vector,
+        VectorHost,
     };
     use num_traits::FromPrimitive;
+    use std::{cell::Cell, rc::Rc};
 
     #[test]
     fn test_init_bdf_nalgebra() {
@@ -1367,6 +1370,127 @@ mod test {
                 );
             }
         }
+    }
+
+    #[test]
+    fn consistent_initialisation_solves_a_nonidentity_mass_matrix_without_algebraic_states() {
+        let problem = OdeBuilder::<TestMat>::new()
+            .rhs_implicit(
+                |x, _p, _t, y| {
+                    y[0] = 4.0 * x[0];
+                    y[1] = 6.0 * x[1];
+                },
+                |_x, _p, _t, v, y| {
+                    y[0] = 4.0 * v[0];
+                    y[1] = 6.0 * v[1];
+                },
+            )
+            .mass(|v, _p, _t, beta, y| {
+                let previous = y.clone();
+                y[0] = 2.0 * v[0] + beta * previous[0];
+                y[1] = 3.0 * v[1] + beta * previous[1];
+            })
+            .init(
+                |_p, _t, y| {
+                    y[0] = 1.0;
+                    y[1] = 2.0;
+                },
+                2,
+            )
+            .build()
+            .unwrap();
+
+        let state = TestState::new_and_consistent::<NalgebraLU<f64>, _>(&problem, 1).unwrap();
+
+        assert_scalar_close(state.as_ref().dy[0], 2.0);
+        assert_scalar_close(state.as_ref().dy[1], 4.0);
+    }
+
+    #[test]
+    fn mass_initialisation_does_not_evaluate_rhs_before_consistency_jacobian() {
+        let jacobian_seen = Rc::new(Cell::new(false));
+        let rhs_jacobian_seen = Rc::clone(&jacobian_seen);
+        let jac_jacobian_seen = Rc::clone(&jacobian_seen);
+        let problem = OdeBuilder::<TestMat>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    if !rhs_jacobian_seen.get() {
+                        return Err(OperatorError::recoverable(std::io::Error::other(
+                            "RHS evaluated before the consistency Jacobian",
+                        )));
+                    }
+                    y[0] = -x[0];
+                    y[1] = x[1] - x[0] * x[0];
+                    Ok(())
+                },
+                move |x, _p, _t, v, y| {
+                    jac_jacobian_seen.set(true);
+                    y[0] = -v[0];
+                    y[1] = v[1] - 2.0 * x[0] * v[0];
+                    Ok(())
+                },
+            )
+            .mass(|v, _p, _t, beta, y| {
+                let previous = y.clone();
+                y[0] = v[0] + beta * previous[0];
+                y[1] = beta * previous[1];
+            })
+            .init(
+                |_p, _t, y| {
+                    y[0] = 2.0;
+                    y[1] = -9.0;
+                },
+                2,
+            )
+            .build()
+            .unwrap();
+
+        let state = TestState::new_and_consistent::<NalgebraLU<f64>, _>(&problem, 1).unwrap();
+
+        assert!(jacobian_seen.get());
+        assert_scalar_close(state.as_ref().y[1], 4.0);
+        assert_scalar_close(state.as_ref().dy[0], -2.0);
+    }
+
+    #[test]
+    fn consistent_initialisation_refreshes_a_nonlinear_algebraic_jacobian() {
+        let jacobian_evaluations = Rc::new(Cell::new(0));
+        let jacobian_evaluations_for_callback = Rc::clone(&jacobian_evaluations);
+        let mut problem = OdeBuilder::<TestMat>::new()
+            .rhs_implicit(
+                |x, _p, _t, y| {
+                    y[0] = -x[0];
+                    y[1] = x[1] * x[1] - 4.0;
+                },
+                move |x, _p, _t, v, y| {
+                    jacobian_evaluations_for_callback
+                        .set(jacobian_evaluations_for_callback.get() + 1);
+                    y[0] = -v[0];
+                    y[1] = 2.0 * x[1] * v[1];
+                },
+            )
+            .mass(|v, _p, _t, beta, y| {
+                let previous = y.clone();
+                y[0] = v[0] + beta * previous[0];
+                y[1] = beta * previous[1];
+            })
+            .init(
+                |_p, _t, y| {
+                    y[0] = 1.0;
+                    y[1] = 1.0;
+                },
+                2,
+            )
+            .build()
+            .unwrap();
+        problem.ic_options.use_linesearch = false;
+        problem.ic_options.max_newton_iterations = 1;
+        problem.ic_options.max_linear_solver_setups = 8;
+
+        let state = TestState::new_and_consistent::<NalgebraLU<f64>, _>(&problem, 1).unwrap();
+
+        assert!(jacobian_evaluations.get() > 2);
+        assert!((state.as_ref().y[1] - 2.0).abs() < 1e-6);
     }
 
     #[test]

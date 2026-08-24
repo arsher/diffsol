@@ -458,39 +458,69 @@ where
                     &mut self.nonlinear_solver,
                     &mut self.convergence,
                 ) {
-                    match error.operator_error().map(|error| error.kind()) {
-                        Some(OperatorErrorKind::Fatal) => return Err(error),
-                        Some(OperatorErrorKind::Recoverable) => {
-                            last_recoverable_error = Some(error.clone());
+                    let mut current_error = error;
+                    loop {
+                        match current_error
+                            .operator_error()
+                            .map(|operator_error| operator_error.kind())
+                        {
+                            Some(OperatorErrorKind::Fatal) => return Err(current_error),
+                            Some(OperatorErrorKind::Recoverable) => {
+                                last_recoverable_error = Some(current_error.clone());
+                            }
+                            None if matches!(&current_error, DiffsolError::LaError(_)) => {
+                                return Err(current_error);
+                            }
+                            None => {}
                         }
-                        None if matches!(error, DiffsolError::LaError(_)) => return Err(error),
-                        None => {}
+
+                        let jacobian_result = if !updated_jacobian {
+                            // Mark the refresh attempt first so a recoverable
+                            // callback refusal progresses to step reduction.
+                            updated_jacobian = true;
+                            debug!("First convergence failure, updating Jacobian and trying again",);
+                            self.jacobian_updates(h, SolverState::FirstConvergenceFail)
+                        } else {
+                            // Newton or its refresh failed after a Jacobian update,
+                            // so reduce the step size before retrying.
+                            h *= Eqn::T::from_f64(0.3).unwrap();
+                            debug!(
+                                "Second convergence failure, reducing step size to {:.3e} and trying again",
+                                h.to_f64().unwrap()
+                            );
+                            self.convergence.reset_eta_timestep_change();
+                            self.update_op_step_size(h);
+                            self.jacobian_updates(h, SolverState::SecondConvergenceFail)
+                        };
+
+                        let retry_refresh = match jacobian_result {
+                            Ok(()) => false,
+                            Err(error) => match error
+                                .operator_error()
+                                .map(|operator_error| operator_error.kind())
+                            {
+                                Some(OperatorErrorKind::Fatal) => return Err(error),
+                                Some(OperatorErrorKind::Recoverable) => {
+                                    last_recoverable_error = Some(error.clone());
+                                    current_error = error;
+                                    true
+                                }
+                                None => return Err(error),
+                            },
+                        };
+
+                        self.rk.reset_prev_error();
+                        if let Err(limit_error) = self.rk.solve_fail(
+                            h,
+                            self.config.minimum_timestep,
+                            self.config.maximum_newton_fails,
+                        ) {
+                            return Err(last_recoverable_error.unwrap_or(limit_error));
+                        }
+                        if !retry_refresh {
+                            break;
+                        }
                     }
-                    if !updated_jacobian {
-                        // newton iteration did not converge, so update jacobian and try again
-                        debug!("First convergence failure, updating Jacobian and trying again",);
-                        updated_jacobian = true;
-                        self.jacobian_updates(h, SolverState::FirstConvergenceFail)?;
-                    } else {
-                        // newton iteration did not converge and jacobian has been updated, so we reduce step size and try again
-                        h *= Eqn::T::from_f64(0.3).unwrap();
-                        debug!(
-                            "Second convergence failure, reducing step size to {:.3e} and trying again",
-                            h.to_f64().unwrap()
-                        );
-                        self.convergence.reset_eta_timestep_change();
-                        self.update_op_step_size(h);
-                        self.jacobian_updates(h, SolverState::SecondConvergenceFail)?;
-                    }
-                    self.rk.reset_prev_error();
-                    if let Err(limit_error) = self.rk.solve_fail(
-                        h,
-                        self.config.minimum_timestep,
-                        self.config.maximum_newton_fails,
-                    ) {
-                        return Err(last_recoverable_error.unwrap_or(limit_error));
-                    }
-                    // try again....
                     continue 'step;
                 }
             }
@@ -650,6 +680,85 @@ mod test {
         _not_send_or_sync: Rc<()>,
     }
 
+    struct JacobianFailureControls {
+        rhs_calls: Rc<Cell<usize>>,
+        rhs_failures_remaining: Rc<Cell<usize>>,
+        jacobian_calls: Rc<Cell<usize>>,
+        jacobian_error_kind: Rc<Cell<Option<OperatorErrorKind>>>,
+        jacobian_failures_remaining: Rc<Cell<Option<usize>>>,
+    }
+
+    fn rhs_jacobian_failure_problem() -> (
+        crate::OdeSolverProblem<
+            impl crate::OdeEquationsImplicit<
+                M = M,
+                V = crate::NalgebraVec<f64>,
+                T = f64,
+                C = crate::NalgebraContext,
+            >,
+        >,
+        JacobianFailureControls,
+    ) {
+        let controls = JacobianFailureControls {
+            rhs_calls: Rc::new(Cell::new(0)),
+            rhs_failures_remaining: Rc::new(Cell::new(0)),
+            jacobian_calls: Rc::new(Cell::new(0)),
+            jacobian_error_kind: Rc::new(Cell::new(None)),
+            jacobian_failures_remaining: Rc::new(Cell::new(Some(0))),
+        };
+        let rhs_calls = Rc::clone(&controls.rhs_calls);
+        let rhs_failures_remaining = Rc::clone(&controls.rhs_failures_remaining);
+        let jacobian_calls = Rc::clone(&controls.jacobian_calls);
+        let jacobian_error_kind = Rc::clone(&controls.jacobian_error_kind);
+        let jacobian_failures_remaining = Rc::clone(&controls.jacobian_failures_remaining);
+        let problem = OdeBuilder::<M>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    rhs_calls.set(rhs_calls.get() + 1);
+                    if rhs_failures_remaining.get() > 0 {
+                        rhs_failures_remaining.set(rhs_failures_remaining.get() - 1);
+                        return Err(OperatorError::recoverable(ModelCallbackError {
+                            message: "trigger SDIRK convergence retry",
+                            _not_send_or_sync: Rc::new(()),
+                        }));
+                    }
+                    y[0] = -x[0];
+                    Ok(())
+                },
+                move |_x, _p, _t, v, y| {
+                    jacobian_calls.set(jacobian_calls.get() + 1);
+                    if let Some(kind) = jacobian_error_kind.get() {
+                        let should_fail = match jacobian_failures_remaining.get() {
+                            Some(0) => false,
+                            Some(remaining) => {
+                                jacobian_failures_remaining.set(Some(remaining - 1));
+                                true
+                            }
+                            None => true,
+                        };
+                        if should_fail {
+                            let source = ModelCallbackError {
+                                message: "SDIRK RHS Jacobian callback refusal",
+                                _not_send_or_sync: Rc::new(()),
+                            };
+                            return Err(match kind {
+                                OperatorErrorKind::Recoverable => {
+                                    OperatorError::recoverable(source)
+                                }
+                                OperatorErrorKind::Fatal => OperatorError::fatal(source),
+                            });
+                        }
+                    }
+                    y[0] = -v[0];
+                    Ok(())
+                },
+            )
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        (problem, controls)
+    }
+
     #[test]
     fn sdirk_returns_a_fatal_rhs_error_without_another_model_call() {
         let calls = Rc::new(Cell::new(0));
@@ -748,6 +857,84 @@ mod test {
             "persistent SDIRK model-domain refusal"
         );
         assert!(calls.get() > setup_calls + 1);
+    }
+
+    #[test]
+    fn sdirk_retries_a_recoverable_rhs_jacobian_error() {
+        let (problem, controls) = rhs_jacobian_failure_problem();
+        let mut solver = problem.esdirk34::<LS>().unwrap();
+        solver.step().unwrap();
+        let setup_rhs_calls = controls.rhs_calls.get();
+        let setup_jacobian_calls = controls.jacobian_calls.get();
+        controls.rhs_failures_remaining.set(1);
+        controls
+            .jacobian_error_kind
+            .set(Some(OperatorErrorKind::Recoverable));
+        controls.jacobian_failures_remaining.set(Some(1));
+
+        solver.step().unwrap();
+
+        assert!(controls.rhs_calls.get() >= setup_rhs_calls + 2);
+        assert!(controls.jacobian_calls.get() >= setup_jacobian_calls + 2);
+    }
+
+    #[test]
+    fn sdirk_returns_a_fatal_rhs_jacobian_error_without_another_callback() {
+        let (problem, controls) = rhs_jacobian_failure_problem();
+        let mut solver = problem.esdirk34::<LS>().unwrap();
+        solver.step().unwrap();
+        let setup_rhs_calls = controls.rhs_calls.get();
+        let setup_jacobian_calls = controls.jacobian_calls.get();
+        controls.rhs_failures_remaining.set(1);
+        controls
+            .jacobian_error_kind
+            .set(Some(OperatorErrorKind::Fatal));
+        controls.jacobian_failures_remaining.set(None);
+
+        let error = solver.step().unwrap_err();
+
+        let operator_error = error
+            .operator_error()
+            .unwrap_or_else(|| panic!("expected operator error, got {error:?}"));
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Fatal);
+        assert_eq!(
+            operator_error
+                .downcast_ref::<ModelCallbackError>()
+                .unwrap()
+                .message,
+            "SDIRK RHS Jacobian callback refusal"
+        );
+        assert_eq!(controls.rhs_calls.get(), setup_rhs_calls + 1);
+        assert_eq!(controls.jacobian_calls.get(), setup_jacobian_calls + 1);
+    }
+
+    #[test]
+    fn sdirk_returns_a_persistent_recoverable_rhs_jacobian_error() {
+        let (problem, controls) = rhs_jacobian_failure_problem();
+        let mut solver = problem.esdirk34::<LS>().unwrap();
+        solver.step().unwrap();
+        solver.config_mut().maximum_newton_fails = 2;
+        let setup_jacobian_calls = controls.jacobian_calls.get();
+        controls.rhs_failures_remaining.set(1);
+        controls
+            .jacobian_error_kind
+            .set(Some(OperatorErrorKind::Recoverable));
+        controls.jacobian_failures_remaining.set(None);
+
+        let error = solver.step().unwrap_err();
+
+        let operator_error = error
+            .operator_error()
+            .unwrap_or_else(|| panic!("expected operator error, got {error:?}"));
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Recoverable);
+        assert_eq!(
+            operator_error
+                .downcast_ref::<ModelCallbackError>()
+                .unwrap()
+                .message,
+            "SDIRK RHS Jacobian callback refusal"
+        );
+        assert!(controls.jacobian_calls.get() > setup_jacobian_calls + 1);
     }
 
     #[test]
@@ -906,7 +1093,7 @@ mod test {
         number_of_linear_solver_setups_from_step_success: 5
         "###);
         insta::assert_yaml_snapshot!(problem.eqn.rhs().statistics(), @r###"
-        number_of_calls: 28
+        number_of_calls: 27
         number_of_jac_muls: 6
         number_of_matrix_evals: 2
         number_of_jac_adj_muls: 0
@@ -973,7 +1160,7 @@ mod test {
             .unwrap();
         test_adjoint_sum_squares(adjoint_solver, dgdp, soln, data, times.as_slice());
         insta::assert_yaml_snapshot!(problem.eqn.rhs().statistics(), @r###"
-        number_of_calls: 411
+        number_of_calls: 409
         number_of_jac_muls: 12
         number_of_matrix_evals: 4
         number_of_jac_adj_muls: 810
@@ -993,7 +1180,7 @@ mod test {
             .unwrap();
         test_adjoint(adjoint_solver, dgdu, 40.0);
         insta::assert_yaml_snapshot!(problem.eqn.rhs().statistics(), @r###"
-        number_of_calls: 370
+        number_of_calls: 366
         number_of_jac_muls: 30
         number_of_matrix_evals: 10
         number_of_jac_adj_muls: 107

@@ -118,10 +118,9 @@ where
     AugmentedEqn: AugmentedOdeEquationsImplicit<Eqn>,
 {
     fn clone(&self) -> Self {
-        let mut nonlinear_solver = NewtonNonlinearSolver::new(LS::default(), NoLineSearch);
+        let nonlinear_solver = NewtonNonlinearSolver::new(LS::default(), NoLineSearch);
         let op = if let Some(op) = &self.op {
             let op = op.clone_state(&self.problem().eqn);
-            nonlinear_solver.set_problem(&op);
             Some(op)
         } else {
             None
@@ -171,7 +170,7 @@ where
             true,
             SdirkConfig::new(&problem.ode_options),
         )?;
-        ret.nonlinear_solver.set_problem(ret.op.as_ref().unwrap());
+        ret.nonlinear_solver.set_problem(ret.op.as_ref().unwrap())?;
         Ok(ret)
     }
 
@@ -238,7 +237,7 @@ where
         )?;
 
         ret.s_op = if integrate_main_eqn {
-            ret.nonlinear_solver.set_problem(ret.op.as_ref().unwrap());
+            ret.nonlinear_solver.set_problem(ret.op.as_ref().unwrap())?;
             let callable = SdirkCallable::new_no_jacobian(augmented_eqn, ret.gamma());
             callable.set_h(ret.rk.state().h);
             Some(callable)
@@ -246,19 +245,19 @@ where
             let state = ret.rk.state();
             let callable = SdirkCallable::new(augmented_eqn, ret.gamma());
             callable.set_h(state.h);
-            ret.nonlinear_solver.set_problem(&callable);
+            ret.nonlinear_solver.set_problem(&callable)?;
             Some(callable)
         };
-        ret.jacobian_updates(ret.rk.state().h, SolverState::Checkpoint);
+        ret.jacobian_updates(ret.rk.state().h, SolverState::Checkpoint)?;
         Ok(ret)
     }
 
-    fn jacobian_updates(&mut self, h: Eqn::T, state: SolverState) {
+    fn jacobian_updates(&mut self, h: Eqn::T, state: SolverState) -> Result<(), DiffsolError> {
         let did_update = if self.jacobian_update.check_rhs_jacobian_update(h, &state) {
             let did_reset = if let Some(op) = self.op.as_mut() {
                 op.set_jacobian_is_stale();
                 self.nonlinear_solver
-                    .reset_jacobian(op, &self.rk.state().y, self.rk.state().t);
+                    .reset_jacobian(op, &self.rk.state().y, self.rk.state().t)?;
                 true
             } else if let Some(s_op) = self.s_op.as_mut() {
                 s_op.set_jacobian_is_stale();
@@ -266,7 +265,7 @@ where
                     s_op,
                     &self.rk.state().s[0],
                     self.rk.state().t,
-                );
+                )?;
                 true
             } else {
                 false
@@ -279,14 +278,14 @@ where
             // shouldn't matter what we put in for x cause rhs_jacobian is already updated
             let did_reset = if let Some(op) = self.op.as_ref() {
                 self.nonlinear_solver
-                    .reset_jacobian(op, &self.rk.state().y, self.rk.state().t);
+                    .reset_jacobian(op, &self.rk.state().y, self.rk.state().t)?;
                 true
             } else if let Some(s_op) = self.s_op.as_ref() {
                 self.nonlinear_solver.reset_jacobian(
                     s_op,
                     &self.rk.state().s[0],
                     self.rk.state().t,
-                );
+                )?;
                 true
             } else {
                 false
@@ -301,6 +300,17 @@ where
         if did_update {
             self.rk.statistics_mut().record_linear_solver_setup(state);
         }
+        Ok(())
+    }
+
+    fn invalidate_jacobian(&mut self) {
+        if let Some(op) = self.op.as_mut() {
+            op.set_jacobian_is_stale();
+        }
+        if let Some(op) = self.s_op.as_mut() {
+            op.set_jacobian_is_stale();
+        }
+        self.nonlinear_solver.clear_jacobian();
     }
 
     fn update_op_step_size(&mut self, h: Eqn::T) {
@@ -390,7 +400,7 @@ where
         self.update_op_step_size(h);
 
         // reinitialise jacobian updates as if a checkpoint was taken
-        self.jacobian_updates(h, SolverState::Checkpoint);
+        self.invalidate_jacobian();
     }
 
     fn into_state(self) -> RkState<Eqn::V> {
@@ -398,7 +408,7 @@ where
     }
 
     fn checkpoint(&mut self) -> Self::State {
-        self.jacobian_updates(self.rk.state().h, SolverState::Checkpoint);
+        self.invalidate_jacobian();
         self.rk.state().clone()
     }
 
@@ -433,23 +443,22 @@ where
                 .start_step_attempt(h, self.s_op.as_mut().map(|s_op| s_op.eqn_mut()));
             for i in start..self.rk.tableau().s() {
                 trace!("SDIRK Stage {}:", i);
-                if self
-                    .rk
-                    .do_stage_sdirk(
-                        i,
-                        h,
-                        self.op.as_ref(),
-                        self.s_op.as_mut(),
-                        &mut self.nonlinear_solver,
-                        &mut self.convergence,
-                    )
-                    .is_err()
-                {
+                if let Err(error) = self.rk.do_stage_sdirk(
+                    i,
+                    h,
+                    self.op.as_ref(),
+                    self.s_op.as_mut(),
+                    &mut self.nonlinear_solver,
+                    &mut self.convergence,
+                ) {
+                    if matches!(error, DiffsolError::LaError(_)) {
+                        return Err(error);
+                    }
                     if !updated_jacobian {
                         // newton iteration did not converge, so update jacobian and try again
                         debug!("First convergence failure, updating Jacobian and trying again",);
                         updated_jacobian = true;
-                        self.jacobian_updates(h, SolverState::FirstConvergenceFail);
+                        self.jacobian_updates(h, SolverState::FirstConvergenceFail)?;
                     } else {
                         // newton iteration did not converge and jacobian has been updated, so we reduce step size and try again
                         h *= Eqn::T::from_f64(0.3).unwrap();
@@ -459,7 +468,7 @@ where
                         );
                         self.convergence.reset_eta_timestep_change();
                         self.update_op_step_size(h);
-                        self.jacobian_updates(h, SolverState::SecondConvergenceFail);
+                        self.jacobian_updates(h, SolverState::SecondConvergenceFail)?;
                     }
                     self.rk.reset_prev_error();
                     self.rk.solve_fail(
@@ -518,7 +527,7 @@ where
 
             self.convergence.reset_eta_timestep_change();
             self.update_op_step_size(h);
-            self.jacobian_updates(h, SolverState::ErrorTestFail);
+            self.jacobian_updates(h, SolverState::ErrorTestFail)?;
             nattempts += 1;
             self.rk.reset_prev_error();
             self.rk.error_test_fail(
@@ -536,7 +545,7 @@ where
         }
 
         self.update_op_step_size(new_h);
-        self.jacobian_updates(new_h, SolverState::StepSuccess);
+        self.jacobian_updates(new_h, SolverState::StepSuccess)?;
         self.jacobian_update.step();
         self.rk.set_prev_error(error_norm);
         self.rk.step_accepted(h, new_h, true)

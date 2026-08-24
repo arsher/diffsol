@@ -1,5 +1,5 @@
 use crate::{Matrix, NonLinearOpJacobian};
-use diffsol_la::LinearSolver as LaLinearSolver;
+use diffsol_la::{error::LaError, LinearSolver as LaLinearSolver};
 use num_traits::Zero;
 
 pub use diffsol_la::{FaerLU, FaerSparseLU, NalgebraLU};
@@ -84,19 +84,26 @@ impl<C: NonLinearOpJacobian> diffsol_la::LinearOp for LinearisedRef<'_, C> {
 /// [`diffsol_la::LinearSolver`] supertrait ([`diffsol_la::LinearSolver::solve`] and
 /// [`diffsol_la::LinearSolver::solve_in_place`]).
 pub trait LinearSolver<M: Matrix>: LaLinearSolver<M> {
-    // sets the point at which the linearisation of the operator is evaluated
-    // the operator is assumed to have the same sparsity as that given to [Self::set_problem]
+    /// Set the point at which the linearisation of the operator is evaluated.
+    ///
+    /// The operator is assumed to have the same sparsity as that given to
+    /// [Self::set_problem]. Returns an error if the solver has not been set up or
+    /// numerical factorization fails.
     fn set_linearisation<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
         &mut self,
         op: &C,
         x: &M::V,
         t: M::T,
-    );
+    ) -> Result<(), LaError>;
 
     /// Set the problem to be solved, any previous problem is discarded.
     /// Any internal state of the solver is reset.
     /// This function will normally set the sparsity pattern of the matrix to be solved.
-    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(&mut self, op: &C);
+    /// Returns an error if the backend cannot analyze that pattern.
+    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), LaError>;
 }
 
 /// Any [`diffsol_la::LinearSolver`] backend automatically implements the
@@ -107,12 +114,15 @@ impl<M: Matrix, LS: LaLinearSolver<M>> LinearSolver<M> for LS {
         op: &C,
         x: &M::V,
         t: M::T,
-    ) {
-        LaLinearSolver::set_linearisation(self, &LinearisedRef::at(op, x, t));
+    ) -> Result<(), LaError> {
+        LaLinearSolver::set_linearisation(self, &LinearisedRef::at(op, x, t))
     }
 
-    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(&mut self, op: &C) {
-        LaLinearSolver::set_sparsity(self, &LinearisedRef::sparsity_only(op));
+    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), LaError> {
+        LaLinearSolver::set_sparsity(self, &LinearisedRef::sparsity_only(op))
     }
 }
 
@@ -200,10 +210,10 @@ pub mod tests {
         C: NonLinearOpJacobian,
         for<'b> &'b C::V: VectorRef<C::V>,
     {
-        solver.set_problem(&op);
+        solver.set_problem(&op).unwrap();
         let x = C::V::zeros(op.nout(), op.context().clone());
         let t = C::T::zero();
-        LinearSolver::set_linearisation(&mut solver, &op, &x, t);
+        LinearSolver::set_linearisation(&mut solver, &op, &x, t).unwrap();
         for soln in solns {
             let x = solver.solve(&soln.b).unwrap();
             let tol = { &soln.x * scale(rtol) + atol };

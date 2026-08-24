@@ -60,19 +60,36 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
     fn set_linearisation<C: LinearOp<T = T, V = CudaVec<T>, M = CudaMat<T>, C = CudaContext>>(
         &mut self,
         op: &C,
-    ) {
-        let matrix = self.matrix.as_mut().expect("Matrix not set");
-        let work = self.work.as_mut().expect("Work space not set");
-        let pivots = self.pivots.as_mut().expect("Pivots not set");
-        let nfo = self.nfo.as_mut().expect("NFO not set").get_mut();
+    ) -> Result<(), LaError> {
+        self.linearisation_set = false;
+        let matrix = self
+            .matrix
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
+        let work = self
+            .work
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
+        let pivots = self
+            .pivots
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
+        let nfo = self
+            .nfo
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?
+            .get_mut();
         op.matrix_inplace(matrix);
         let nbatch = op.context().nbatch();
         let nrows = matrix.nrows();
         let ncols = matrix.ncols();
         let stream = &op.context().stream;
-        let m = i32::try_from(nrows).unwrap();
-        let n = i32::try_from(ncols).unwrap();
-        let lda = i32::try_from(nrows).unwrap();
+        let m =
+            i32::try_from(nrows).map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
+        let n =
+            i32::try_from(ncols).map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
+        let lda =
+            i32::try_from(nrows).map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
         let (a_ptr, _) = matrix.data.device_ptr_mut(stream);
         let (ws_ptr, _) = work.device_ptr_mut(stream);
         let (p_ptr, _) = pivots.device_ptr_mut(stream);
@@ -94,6 +111,7 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
             };
         }
         self.linearisation_set = true;
+        Ok(())
     }
 
     fn solve_in_place(&self, x: &mut CudaVec<T>) -> Result<(), LaError> {
@@ -115,13 +133,23 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
         if x_nstates != nrows {
             Err(linear_solver_error!(LinearSolverMatrixVectorNotCompatible))?;
         }
-        let mut nfo = self.nfo.as_ref().expect("NFO not set").borrow_mut();
+        let mut nfo = self
+            .nfo
+            .as_ref()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?
+            .borrow_mut();
         let stream = &x.context.stream;
-        let lda = i32::try_from(nrows).unwrap();
-        let n = i32::try_from(nrows).unwrap();
+        let lda =
+            i32::try_from(nrows).map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
+        let n =
+            i32::try_from(nrows).map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
         let nrhs = 1i32;
         let (a_ptr, _) = matrix.data.device_ptr(stream);
-        let (p_ptr, _) = self.pivots.as_ref().unwrap().device_ptr(stream);
+        let (p_ptr, _) = self
+            .pivots
+            .as_ref()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?
+            .device_ptr(stream);
         let (x_ptr, _) = x.data.device_ptr_mut(stream);
         let (n_ptr, _) = nfo.device_ptr_mut(stream);
         for b in 0..nbatch {
@@ -149,7 +177,12 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
     fn set_sparsity<C: LinearOp<T = T, V = CudaVec<T>, M = CudaMat<T>, C = CudaContext>>(
         &mut self,
         op: &C,
-    ) {
+    ) -> Result<(), LaError> {
+        self.linearisation_set = false;
+        self.matrix = None;
+        self.work = None;
+        self.pivots = None;
+        self.nfo = None;
         let ncols = op.ncols();
         let nrows = op.nrows();
         let nbatch = op.context().nbatch();
@@ -161,10 +194,18 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
         let stream = &op.context().stream;
         let lwork = {
             let mut lwork = 0;
-            let (a, _syn) = self.matrix.as_mut().unwrap().data.device_ptr_mut(stream);
-            let m = i32::try_from(nrows).unwrap();
-            let n = i32::try_from(ncols).unwrap();
-            let lda = i32::try_from(nrows).unwrap();
+            let (a, _syn) = self
+                .matrix
+                .as_mut()
+                .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?
+                .data
+                .device_ptr_mut(stream);
+            let m = i32::try_from(nrows)
+                .map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
+            let n = i32::try_from(ncols)
+                .map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
+            let lda = i32::try_from(nrows)
+                .map_err(|error| crate::cuda_error!(Other, error.to_string()))?;
             unsafe {
                 cusolverDnDgetrf_bufferSize(self.handle, m, n, a as *mut f64, lda, &mut lwork);
             }
@@ -174,19 +215,20 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
             self.work = Some(
                 stream
                     .alloc(lwork as usize)
-                    .expect("Failed to allocate work space"),
+                    .map_err(|error| crate::cuda_error!(Other, error.to_string()))?,
             );
             self.pivots = Some(
                 stream
                     .alloc(nrows * nbatch)
-                    .expect("Failed to allocate pivots"),
+                    .map_err(|error| crate::cuda_error!(Other, error.to_string()))?,
             );
-            self.nfo = Some(RefCell::new(
-                stream.alloc(nbatch).expect("Failed to allocate NFO"),
-            ));
+            self.nfo =
+                Some(RefCell::new(stream.alloc(nbatch).map_err(|error| {
+                    crate::cuda_error!(Other, error.to_string())
+                })?));
         }
 
-        self.linearisation_set = false;
+        Ok(())
     }
 }
 

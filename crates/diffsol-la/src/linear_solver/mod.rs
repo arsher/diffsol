@@ -21,17 +21,29 @@ pub trait LinearSolver<M: Matrix>: Default {
     ///
     /// The operator is assumed to have the same sparsity as that given to
     /// [Self::set_sparsity].
-    fn set_linearisation<C: LinearOp<V = M::V, T = M::T, M = M, C = M::C>>(&mut self, op: &C);
+    ///
+    /// Returns an error if the solver has not been set up or numerical
+    /// factorization fails.
+    fn set_linearisation<C: LinearOp<V = M::V, T = M::T, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), LaError>;
 
     /// Set the sparsity of the problem to be solved, any previous problem is discarded.
     ///
     /// Any internal state of the solver is reset. This function will normally set
     /// the sparsity pattern of the matrix to be solved.
-    fn set_sparsity<C: LinearOp<V = M::V, T = M::T, M = M, C = M::C>>(&mut self, op: &C);
+    ///
+    /// Returns an error if the sparsity pattern cannot be analyzed or the backend
+    /// cannot allocate its setup data.
+    fn set_sparsity<C: LinearOp<V = M::V, T = M::T, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), LaError>;
 
     /// Solve the problem `Ax = b` and return the solution `x`.
     ///
-    /// Panics if [Self::set_linearisation] has not been called previously.
+    /// Returns an error if [Self::set_linearisation] has not been called previously.
     fn solve(&self, b: &M::V) -> Result<M::V, LaError> {
         let mut b = b.clone();
         self.solve_in_place(&mut b)?;

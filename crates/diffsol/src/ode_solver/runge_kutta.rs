@@ -659,7 +659,10 @@ where
                 &self.tableau,
             );
             if !nonlinear_solver.is_jacobian_set() {
-                nonlinear_solver.reset_jacobian(op, &self.state.y, t);
+                if !nonlinear_solver.is_problem_set() {
+                    nonlinear_solver.set_problem(op)?;
+                }
+                nonlinear_solver.reset_jacobian(op, &self.state.y, t)?;
                 self.statistics
                     .record_linear_solver_setup(SolverState::Checkpoint);
             }
@@ -713,11 +716,14 @@ where
                 );
 
                 if !nonlinear_solver.is_jacobian_set() {
+                    if !nonlinear_solver.is_problem_set() {
+                        nonlinear_solver.set_problem::<SdirkCallable<AugEqn>>(op)?;
+                    }
                     nonlinear_solver.reset_jacobian::<SdirkCallable<AugEqn>>(
                         op,
                         &self.old_state.s[j],
                         t,
-                    );
+                    )?;
                     self.statistics
                         .record_linear_solver_setup(SolverState::Checkpoint);
                 }

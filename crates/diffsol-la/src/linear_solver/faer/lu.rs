@@ -29,10 +29,14 @@ impl<T: FaerScalar> LinearSolver<FaerMat<T>> for LU<T> {
     fn set_linearisation<C: LinearOp<T = T, V = FaerVec<T>, M = FaerMat<T>, C = FaerContext>>(
         &mut self,
         op: &C,
-    ) {
-        let matrix = self.matrix.as_mut().expect("Matrix not set");
+    ) -> Result<(), LaError> {
+        let matrix = self
+            .matrix
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         op.matrix_inplace(matrix);
         self.lu = Some(matrix.data.full_piv_lu());
+        Ok(())
     }
 
     fn solve_in_place(&self, x: &mut FaerVec<T>) -> Result<(), LaError> {
@@ -47,11 +51,13 @@ impl<T: FaerScalar> LinearSolver<FaerMat<T>> for LU<T> {
     fn set_sparsity<C: LinearOp<T = T, V = FaerVec<T>, M = FaerMat<T>, C = FaerContext>>(
         &mut self,
         op: &C,
-    ) {
+    ) -> Result<(), LaError> {
         let ncols = op.ncols();
         let nrows = op.nrows();
         let matrix = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), *op.context());
         self.matrix = Some(matrix);
+        self.lu = None;
+        Ok(())
     }
 }
 
@@ -64,8 +70,8 @@ mod tests {
     fn test_lu() {
         let mut s = LU::<f64>::default();
         let op = diagonal_op::<FaerMat<f64>>(2.0);
-        s.set_sparsity(&op);
-        s.set_linearisation(&op);
+        s.set_sparsity(&op).unwrap();
+        s.set_linearisation(&op).unwrap();
         let b = FaerVec::from_vec(vec![2.0, 4.0], Default::default());
         let x = s.solve(&b).unwrap();
         x.assert_eq_st(

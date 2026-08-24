@@ -38,13 +38,23 @@ impl<T: FaerScalar> LinearSolver<FaerSparseMat<T>> for FaerSparseLU<T> {
     >(
         &mut self,
         op: &C,
-    ) {
-        let matrix = self.matrix.as_mut().expect("Matrix not set");
+    ) -> Result<(), LaError> {
+        self.lu = None;
+        let matrix = self
+            .matrix
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         op.matrix_inplace(matrix);
+        let symbolic = self
+            .lu_symbolic
+            .as_ref()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         self.lu = Some(
-            Lu::try_new_with_symbolic(self.lu_symbolic.as_ref().unwrap().clone(), matrix.data.rb())
-                .expect("Failed to factorise matrix"),
+            Lu::try_new_with_symbolic(symbolic.clone(), matrix.data.rb()).map_err(|error| {
+                linear_solver_error!(FaerSparseNumericFactorizationFailed, error.to_string())
+            })?,
         );
+        Ok(())
     }
 
     fn solve_in_place(&self, x: &mut FaerVec<T>) -> Result<(), LaError> {
@@ -59,33 +69,110 @@ impl<T: FaerScalar> LinearSolver<FaerSparseMat<T>> for FaerSparseLU<T> {
     fn set_sparsity<C: LinearOp<T = T, V = FaerVec<T>, M = FaerSparseMat<T>, C = FaerContext>>(
         &mut self,
         op: &C,
-    ) {
+    ) -> Result<(), LaError> {
+        self.lu = None;
+        self.lu_symbolic = None;
+        self.matrix = None;
         let ncols = op.ncols();
         let nrows = op.nrows();
         let matrix = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), *op.context());
         self.lu_symbolic = Some(
-            SymbolicLu::try_new(matrix.data.symbolic()).expect("Failed to create symbolic LU"),
+            SymbolicLu::try_new(matrix.data.symbolic()).map_err(|error| {
+                linear_solver_error!(FaerSparseSymbolicAnalysisFailed, error.to_string())
+            })?,
         );
         self.matrix = Some(matrix);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{linear_solver::tests::diagonal_op, Vector};
+    use crate::{linear_solver::tests::diagonal_op, MatrixCommon, Vector};
+
+    struct StructurallySingularOp {
+        matrix: FaerSparseMat<f64>,
+    }
+
+    impl LinearOp for StructurallySingularOp {
+        type T = f64;
+        type V = FaerVec<f64>;
+        type M = FaerSparseMat<f64>;
+        type C = FaerContext;
+
+        fn nrows(&self) -> IndexType {
+            self.matrix.nrows()
+        }
+
+        fn ncols(&self) -> IndexType {
+            self.matrix.ncols()
+        }
+
+        fn context(&self) -> &Self::C {
+            self.matrix.context()
+        }
+
+        fn matrix_inplace(&self, matrix: &mut Self::M) {
+            matrix.copy_from(&self.matrix);
+        }
+
+        fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
+            self.matrix
+                .sparsity()
+                .map(|sparsity| sparsity.to_owned().unwrap())
+        }
+    }
 
     #[test]
     fn test_sparse_lu() {
         let mut s = FaerSparseLU::<f64>::default();
         let op = diagonal_op::<FaerSparseMat<f64>>(2.0);
-        s.set_sparsity(&op);
-        s.set_linearisation(&op);
+        s.set_sparsity(&op).unwrap();
+        s.set_linearisation(&op).unwrap();
         let b = FaerVec::from_vec(vec![2.0, 4.0], Default::default());
         let x = s.solve(&b).unwrap();
         x.assert_eq_st(
             &FaerVec::from_vec(vec![1.0, 2.0], Default::default()),
             1e-10,
         );
+    }
+
+    #[test]
+    fn sparse_lu_reports_linearisation_before_setup() {
+        let mut s = FaerSparseLU::<f64>::default();
+        let op = diagonal_op::<FaerSparseMat<f64>>(2.0);
+
+        let error = s.set_linearisation(&op).unwrap_err();
+
+        assert!(matches!(
+            error,
+            LaError::LinearSolverError(crate::error::LinearSolverError::LinearSolverNotSetup)
+        ));
+    }
+
+    #[test]
+    fn sparse_lu_reports_singular_numeric_factorization() {
+        let mut s = FaerSparseLU::<f64>::default();
+        let op = StructurallySingularOp {
+            matrix: FaerSparseMat::try_from_triplets(
+                2,
+                2,
+                vec![(0, 0)],
+                vec![1.0],
+                FaerContext::default(),
+            )
+            .unwrap(),
+        };
+        s.set_sparsity(&op).unwrap();
+
+        let error = s.set_linearisation(&op).unwrap_err();
+
+        assert!(matches!(
+            error,
+            LaError::LinearSolverError(
+                crate::error::LinearSolverError::FaerSparseNumericFactorizationFailed(_)
+            )
+        ));
     }
 }

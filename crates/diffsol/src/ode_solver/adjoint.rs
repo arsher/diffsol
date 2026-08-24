@@ -534,7 +534,7 @@ where
                 src_indices: dd_idx,
                 solver: LS::default(),
             };
-            mass_dd.solver.set_problem(&mass_dd.block);
+            mass_dd.solver.set_problem(&mass_dd.block)?;
 
             // setup jacobian solver if there are algebraic indices
             let (rhs_jac_aa, rhs_jac_ad) = if algebraic_indices.len() > 0 {
@@ -547,7 +547,7 @@ where
                     src_indices: aa_idx,
                     solver: LS::default(),
                 };
-                rhs_jac_aa.solver.set_problem(&rhs_jac_aa.block);
+                rhs_jac_aa.solver.set_problem(&rhs_jac_aa.block)?;
                 let rhs_jac_ad = BlockInfo {
                     block: MatrixOp::new(ad),
                     src_indices: ad_idx,
@@ -627,7 +627,7 @@ where
                 &rhs_jac_aa.block,
                 &self.tmp_algebraic,
                 Eqn::T::zero(),
-            );
+            )?;
         };
 
         // if there is a mass matrix, setup the solver for M_dd*^-1
@@ -639,7 +639,7 @@ where
                 &mass_dd.block,
                 &self.tmp_differential,
                 Eqn::T::zero(),
-            );
+            )?;
         }
 
         // tmp_nout = all

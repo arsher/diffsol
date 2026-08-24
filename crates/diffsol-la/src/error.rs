@@ -36,6 +36,10 @@ pub enum LinearSolverError {
     KluFailedToAnalyze,
     #[error("KLU failed to factorize")]
     KluFailedToFactorize,
+    #[error("Faer sparse symbolic analysis failed: {0}")]
+    FaerSparseSymbolicAnalysisFailed(String),
+    #[error("Faer sparse numeric factorization failed: {0}")]
+    FaerSparseNumericFactorizationFailed(String),
     #[error("Error: {0}")]
     Other(String),
 }

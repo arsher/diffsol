@@ -1,5 +1,5 @@
 use crate::{Matrix, NonLinearOpJacobian};
-use diffsol_la::{error::LaError, LinearSolver as LaLinearSolver};
+use diffsol_la::{error::LaError, LinearSolver as LaLinearSolver, OperatorError, OperatorResult};
 use num_traits::Zero;
 
 pub use diffsol_la::{FaerLU, FaerSparseLU, NalgebraLU};
@@ -66,9 +66,11 @@ impl<C: NonLinearOpJacobian> diffsol_la::LinearOp for LinearisedRef<'_, C> {
         self.op.context()
     }
 
-    fn matrix_inplace(&self, y: &mut Self::M) {
-        let x = self.x.expect("LinearisedRef: state x not set");
-        self.op.jacobian_inplace(x, self.t, y);
+    fn matrix_inplace(&self, y: &mut Self::M) -> OperatorResult {
+        let x = self.x.ok_or_else(|| {
+            OperatorError::fatal(std::io::Error::other("LinearisedRef: state x not set"))
+        })?;
+        self.op.jacobian_inplace(x, self.t, y)
     }
 
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -184,7 +186,8 @@ pub mod tests {
             &M::V::from_element(2, M::T::one(), ctx.clone()),
             M::T::zero(),
             &p,
-        );
+        )
+        .unwrap();
         let rtol = M::T::from_f64(1e-6).unwrap();
         let atol = M::V::from_vec(
             vec![M::T::from_f64(1e-6).unwrap(), M::T::from_f64(1e-6).unwrap()],
@@ -253,7 +256,8 @@ pub mod tests {
             &M::V::from_element(2, M::T::one(), ctx.clone()),
             M::T::zero(),
             &p,
-        );
+        )
+        .unwrap();
         let rtol = M::T::from_f64(1e-6).unwrap();
         let atol_val = M::T::from_f64(1e-6).unwrap();
         let atol = M::V::from_vec(vec![atol_val; 4], ctx.clone());

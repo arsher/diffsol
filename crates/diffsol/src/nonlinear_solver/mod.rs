@@ -2,6 +2,7 @@ use crate::{
     error::DiffsolError, Matrix, NonLinearOp as TimeAwareNonLinearOp,
     NonLinearOpJacobian as TimeAwareNonLinearOpJacobian,
 };
+use diffsol_la::OperatorResult;
 use diffsol_nl::NonLinearSolver as NlNonLinearSolver;
 use num_traits::Zero;
 
@@ -61,18 +62,18 @@ impl<C: TimeAwareNonLinearOp> diffsol_nl::NonLinearOp for NonLinearisedRef<'_, C
         self.op.context()
     }
 
-    fn call_inplace(&self, x: &Self::V, y: &mut Self::V) {
-        self.op.call_inplace(x, self.t, y);
+    fn call_inplace(&self, x: &Self::V, y: &mut Self::V) -> OperatorResult {
+        self.op.call_inplace(x, self.t, y)
     }
 }
 
 impl<C: TimeAwareNonLinearOpJacobian> diffsol_nl::NonLinearOpJacobian for NonLinearisedRef<'_, C> {
-    fn jac_mul_inplace(&self, x: &Self::V, v: &Self::V, y: &mut Self::V) {
-        self.op.jac_mul_inplace(x, self.t, v, y);
+    fn jac_mul_inplace(&self, x: &Self::V, v: &Self::V, y: &mut Self::V) -> OperatorResult {
+        self.op.jac_mul_inplace(x, self.t, v, y)
     }
 
-    fn jacobian_inplace(&self, x: &Self::V, y: &mut Self::M) {
-        self.op.jacobian_inplace(x, self.t, y);
+    fn jacobian_inplace(&self, x: &Self::V, y: &mut Self::M) -> OperatorResult {
+        self.op.jacobian_inplace(x, self.t, y)
     }
 
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {

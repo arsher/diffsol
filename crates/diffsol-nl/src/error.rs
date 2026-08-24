@@ -1,4 +1,4 @@
-use diffsol_la::error::LaError;
+use diffsol_la::error::{LaError, OperatorError};
 use thiserror::Error;
 
 /// Error type for the diffsol non-linear solver crate (`diffsol-nl`).
@@ -15,6 +15,22 @@ pub enum NlError {
     LaError(#[from] LaError),
     #[error("Error: {0}")]
     Other(String),
+}
+
+impl From<OperatorError> for NlError {
+    fn from(error: OperatorError) -> Self {
+        Self::LaError(LaError::OperatorError(error))
+    }
+}
+
+impl NlError {
+    /// Return the user-operator error retained by this error, if any.
+    pub fn operator_error(&self) -> Option<&OperatorError> {
+        match self {
+            Self::LaError(LaError::OperatorError(error)) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 /// Possible errors that can occur when solving a non-linear problem

@@ -17,7 +17,9 @@ use diffsol::{
 };
 
 mod sundials_benches;
-use common::{bench_explicit, bench_implicit, bench_implicit_cg, bench_implicit_rt};
+use common::{
+    bench_explicit, bench_implicit, bench_implicit_cg, bench_implicit_cg_result, bench_implicit_rt,
+};
 
 macro_rules! bench_diffsl {
     ($g:ident, $name:ident, $solver:ident, $ls:ident, $problem:ident, $m:ty) => {
@@ -43,6 +45,25 @@ macro_rules! bench_diffsl_cg {
             $g.bench_function(concat!(stringify!($name), "_", $N), |b| {
                 b.iter(|| {
                     let (problem, soln) = $problem::<$m, LlvmModule, $N>();
+                    let t_evals = soln
+                        .solution_points
+                        .iter()
+                        .map(|sp| sp.t)
+                        .collect::<Vec<_>>();
+                    common::$solver::<_, $ls<_>>(&problem, &t_evals);
+                })
+            });
+        )+
+    };
+}
+
+macro_rules! bench_diffsl_cg_result {
+    ($g:ident, $name:ident, $solver:ident, $ls:ident, $problem:ident, $m:ty, $($N:expr),+ $(,)?) => {
+        $(
+            #[cfg(feature = "diffsl-llvm")]
+            $g.bench_function(concat!(stringify!($name), "_", $N), |b| {
+                b.iter(|| {
+                    let (problem, soln) = $problem::<$m, LlvmModule, $N>().unwrap();
                     let t_evals = soln
                         .solution_points
                         .iter()
@@ -315,7 +336,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // -------------------------------------------------------------------------
     {
         let mut g = c.benchmark_group("foodweb");
-        bench_implicit_cg!(
+        bench_implicit_cg_result!(
             g,
             faer_sparse_bdf,
             bdf,
@@ -327,7 +348,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             20,
             30
         );
-        bench_implicit_cg!(
+        bench_implicit_cg_result!(
             g,
             faer_sparse_tr_bdf2,
             tr_bdf2,
@@ -339,7 +360,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             20,
             30
         );
-        bench_implicit_cg!(
+        bench_implicit_cg_result!(
             g,
             faer_sparse_esdirk,
             esdirk34,
@@ -352,7 +373,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             30
         );
 
-        bench_diffsl_cg!(
+        bench_diffsl_cg_result!(
             g,
             faer_sparse_bdf_diffsl,
             bdf,

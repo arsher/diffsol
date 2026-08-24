@@ -143,7 +143,7 @@ mod tests {
                 (soln, sens_soln)
             };
             let soln = if let Some(out) = method.problem().eqn.out() {
-                out.call(&soln, point.t)
+                out.call(&soln, point.t).unwrap()
             } else {
                 soln
             };
@@ -664,14 +664,27 @@ mod tests {
     }
 
     impl<M: Matrix> NonLinearOp for TestEqnRhs<M> {
-        fn call_inplace(&self, _x: &Self::V, _t: Self::T, y: &mut Self::V) {
+        fn call_inplace(
+            &self,
+            _x: &Self::V,
+            _t: Self::T,
+            y: &mut Self::V,
+        ) -> crate::OperatorResult {
             y.fill(M::T::zero());
+            Ok(())
         }
     }
 
     impl<M: Matrix> NonLinearOpJacobian for TestEqnRhs<M> {
-        fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, _v: &Self::V, y: &mut Self::V) {
+        fn jac_mul_inplace(
+            &self,
+            _x: &Self::V,
+            _t: Self::T,
+            _v: &Self::V,
+            y: &mut Self::V,
+        ) -> crate::OperatorResult {
             y.fill(M::T::zero());
+            Ok(())
         }
     }
 
@@ -706,14 +719,22 @@ mod tests {
     }
 
     impl<M: Matrix> NonLinearOp for TestEqnOut<M> {
-        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) {
+        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) -> crate::OperatorResult {
             y.copy_from(x);
+            Ok(())
         }
     }
 
     impl<M: Matrix> NonLinearOpJacobian for TestEqnOut<M> {
-        fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, v: &Self::V, y: &mut Self::V) {
+        fn jac_mul_inplace(
+            &self,
+            _x: &Self::V,
+            _t: Self::T,
+            v: &Self::V,
+            y: &mut Self::V,
+        ) -> crate::OperatorResult {
             y.copy_from(v);
+            Ok(())
         }
     }
 

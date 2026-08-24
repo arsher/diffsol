@@ -1,4 +1,4 @@
-use diffsol_la::{IndexType, LinearOp as LaLinearOp, LinearSolver, Matrix, Vector};
+use diffsol_la::{IndexType, LinearOp as LaLinearOp, LinearSolver, Matrix, OperatorError, Vector};
 
 use crate::{
     convergence::{Convergence, ConvergenceStatus},
@@ -14,7 +14,7 @@ pub fn newton_iteration<V: Vector>(
     xn: &mut V,
     tmp: &mut V,
     error_y: &V,
-    fun: impl Fn(&V, &mut V),
+    fun: impl Fn(&V, &mut V) -> Result<(), NlError>,
     linear_solver: impl Fn(&mut V) -> Result<(), NlError>,
     convergence: &mut Convergence<V>,
     line_search: &mut impl LineSearch<V>,
@@ -75,9 +75,11 @@ impl<C: NonLinearOpJacobian> LaLinearOp for JacobianRef<'_, C> {
         self.op.context()
     }
 
-    fn matrix_inplace(&self, y: &mut Self::M) {
-        let x = self.x.expect("JacobianRef: state x not set");
-        self.op.jacobian_inplace(x, y);
+    fn matrix_inplace(&self, y: &mut Self::M) -> diffsol_la::OperatorResult {
+        let x = self.x.ok_or_else(|| {
+            OperatorError::fatal(std::io::Error::other("JacobianRef: state x not set"))
+        })?;
+        self.op.jacobian_inplace(x, y)
     }
 
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -180,7 +182,7 @@ impl<M: Matrix, Ls: LinearSolver<M>, Lsearch: LineSearch<M::V>> NonLinearSolver<
             return Err(NlError::from(error));
         }
         let linear_solver = |x: &mut C::V| self.linear_solver.solve_in_place(x).map_err(Into::into);
-        let fun = |x: &C::V, y: &mut C::V| op.call_inplace(x, y);
+        let fun = |x: &C::V, y: &mut C::V| op.call_inplace(x, y).map_err(Into::into);
         newton_iteration(
             xn,
             &mut self.tmp,

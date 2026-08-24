@@ -1,4 +1,6 @@
-use crate::{LinearOp, Matrix, MatrixSparsityRef, NonLinearOp, NonLinearOpJacobian, Op};
+use crate::{
+    LinearOp, Matrix, MatrixSparsityRef, NonLinearOp, NonLinearOpJacobian, Op, OperatorResult,
+};
 use num_traits::Zero;
 
 pub struct MatrixOp<M: Matrix> {
@@ -37,8 +39,15 @@ impl<M: Matrix> Op for MatrixOp<M> {
 }
 
 impl<M: Matrix> LinearOp for MatrixOp<M> {
-    fn gemv_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         self.m.gemv(t, x, beta, y);
+        Ok(())
     }
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.m.sparsity().map(|s| s.to_owned())
@@ -46,22 +55,31 @@ impl<M: Matrix> LinearOp for MatrixOp<M> {
 }
 
 impl<M: Matrix> NonLinearOp for MatrixOp<M> {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         self.m.gemv(t, x, Self::T::zero(), y);
+        Ok(())
     }
 }
 
 impl<M: Matrix> NonLinearOpJacobian for MatrixOp<M> {
-    fn jac_mul_inplace(&self, _x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         self.m.gemv(t, v, Self::T::zero(), y);
+        Ok(())
     }
 
-    fn jacobian(&self, _x: &Self::V, _t: Self::T) -> Self::M {
-        self.m.clone()
+    fn jacobian(&self, _x: &Self::V, _t: Self::T) -> OperatorResult<Self::M> {
+        Ok(self.m.clone())
     }
 
-    fn jacobian_inplace(&self, _x: &Self::V, _t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, _x: &Self::V, _t: Self::T, y: &mut Self::M) -> OperatorResult {
         y.copy_from(&self.m);
+        Ok(())
     }
 
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {

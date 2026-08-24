@@ -711,7 +711,7 @@ where
         let rtol = self.rtol;
         state
             .as_mut()
-            .set_step_size(h, atol, rtol, augmented_eqn, 1);
+            .set_step_size(h, atol, rtol, augmented_eqn, 1)?;
 
         Ok(state)
     }
@@ -981,7 +981,7 @@ where
         let rtol = self.rtol;
         state
             .as_mut()
-            .set_step_size(h, atol, rtol, augmented_eqn, tableau.order());
+            .set_step_size(h, atol, rtol, augmented_eqn, tableau.order())?;
         Ok(state)
     }
 
@@ -1143,7 +1143,7 @@ where
         let rtol = self.rtol;
         state
             .as_mut()
-            .set_step_size(h, atol, rtol, augmented_eqn, tableau.order());
+            .set_step_size(h, atol, rtol, augmented_eqn, tableau.order())?;
         Ok(state)
     }
 

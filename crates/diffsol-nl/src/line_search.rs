@@ -3,7 +3,7 @@ use crate::{
     error::NlError,
     non_linear_solver_error,
 };
-use diffsol_la::{Scalar, Vector};
+use diffsol_la::{OperatorErrorKind, Scalar, Vector};
 use log::warn;
 use num_traits::{FromPrimitive, One, Pow};
 
@@ -31,7 +31,7 @@ pub trait LineSearch<V: Vector>: Default {
         x: &mut V,
         delta: &mut V,
         error_y: &V,
-        fun: &impl Fn(&V, &mut V),
+        fun: &impl Fn(&V, &mut V) -> Result<(), NlError>,
         linear_solver: &impl Fn(&mut V) -> Result<(), NlError>,
         convergence: &mut Convergence<V>,
     ) -> Result<ConvergenceStatus, NlError>;
@@ -50,12 +50,12 @@ impl<V: Vector> LineSearch<V> for NoLineSearch {
         x: &mut V,
         delta: &mut V,
         error_y: &V,
-        fun: &impl Fn(&V, &mut V),
+        fun: &impl Fn(&V, &mut V) -> Result<(), NlError>,
         linear_solver: &impl Fn(&mut V) -> Result<(), NlError>,
         convergence: &mut Convergence<V>,
     ) -> Result<ConvergenceStatus, NlError> {
         //delta = f_at_n
-        fun(x, delta);
+        fun(x, delta)?;
 
         //delta = -delta_n
         linear_solver(delta)?;
@@ -116,14 +116,14 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
         x: &mut V,
         delta: &mut V,
         error_y: &V,
-        fun: &impl Fn(&V, &mut V),
+        fun: &impl Fn(&V, &mut V) -> Result<(), NlError>,
         linear_solver: &impl Fn(&mut V) -> Result<(), NlError>,
         convergence: &mut Convergence<V>,
     ) -> Result<ConvergenceStatus, NlError> {
         // on the first iteration, we need to init delta and norm
         if convergence.niter() == 0 {
             //delta = f_at_n
-            fun(x, delta);
+            fun(x, delta)?;
 
             //delta = -delta_n
             linear_solver(delta)?;
@@ -155,16 +155,34 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
         let two_phi0 = norm * norm;
         let min_alpha = self.steptol / norm;
         let mut alpha = V::T::one();
+        let mut last_recoverable_error = None;
 
         for i in 0..self.max_iter {
             // take the step and recompute the norm
             x.axpy(-alpha, &self.delta0, V::T::one());
             // xi = x0 + alpha * delta_n
 
-            fun(x, delta);
+            if let Err(error) = fun(x, delta) {
+                x.copy_from(&self.x0);
+                match error.operator_error().map(|error| error.kind()) {
+                    Some(OperatorErrorKind::Recoverable) => {
+                        last_recoverable_error = Some(error.clone());
+                        self.n_iters = i;
+                        if alpha < min_alpha {
+                            return Err(error);
+                        }
+                        alpha *= self.tau;
+                        continue;
+                    }
+                    _ => return Err(error),
+                }
+            }
             //delta_p = f_at_n
 
-            linear_solver(delta)?;
+            if let Err(error) = linear_solver(delta) {
+                x.copy_from(&self.x0);
+                return Err(error);
+            }
             //delta_p = -delta_n
 
             let new_norm = convergence.norm(delta, error_y);
@@ -196,6 +214,107 @@ impl<V: Vector> LineSearch<V> for BacktrackingLineSearch<V> {
             This usually indicates a stiff problem or model producing NaN/Inf values.",
             self.max_iter
         );
-        Err(non_linear_solver_error!(LinesearchFailedMaxIterations))
+        Err(last_recoverable_error
+            .unwrap_or_else(|| non_linear_solver_error!(LinesearchFailedMaxIterations)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use diffsol_la::{NalgebraContext, NalgebraVec, OperatorError, OperatorErrorKind, Vector};
+    use thiserror::Error;
+
+    use super::{BacktrackingLineSearch, Convergence, LineSearch};
+
+    #[derive(Debug, Error)]
+    #[error("model rejected trial {0}")]
+    struct ModelError(&'static str);
+
+    #[test]
+    fn recoverable_trial_error_backtracks_and_retries() {
+        type V = NalgebraVec<f64>;
+        let ctx = NalgebraContext::default();
+        let mut x = V::from_vec(vec![1.0], ctx);
+        let mut delta = V::zeros(1, ctx);
+        let error_y = x.clone();
+        let atol = V::from_vec(vec![1.0], ctx);
+        let mut convergence = Convergence::new(1e-6, &atol);
+        let calls = Cell::new(0);
+        let fun = |_: &V, residual: &mut V| {
+            let call = calls.get();
+            calls.set(call + 1);
+            match call {
+                0 => {
+                    residual[0] = 1.0;
+                    Ok(())
+                }
+                1 => Err(OperatorError::recoverable(ModelError("outside domain")).into()),
+                _ => {
+                    residual[0] = 0.0;
+                    Ok(())
+                }
+            }
+        };
+        let mut line_search = BacktrackingLineSearch::<V>::default();
+
+        line_search
+            .take_optimal_step(
+                &mut x,
+                &mut delta,
+                &error_y,
+                &fun,
+                &|_| Ok(()),
+                &mut convergence,
+            )
+            .unwrap();
+
+        assert_eq!(calls.get(), 3);
+        assert_eq!(x[0], 0.5);
+    }
+
+    #[test]
+    fn fatal_trial_error_restores_point_and_stops_immediately() {
+        type V = NalgebraVec<f64>;
+        let ctx = NalgebraContext::default();
+        let mut x = V::from_vec(vec![1.0], ctx);
+        let mut delta = V::zeros(1, ctx);
+        let error_y = x.clone();
+        let atol = V::from_vec(vec![1.0], ctx);
+        let mut convergence = Convergence::new(1e-6, &atol);
+        let calls = Cell::new(0);
+        let fun = |_: &V, residual: &mut V| {
+            let call = calls.get();
+            calls.set(call + 1);
+            if call == 0 {
+                residual[0] = 1.0;
+                Ok(())
+            } else {
+                Err(OperatorError::fatal(ModelError("broken constitutive law")).into())
+            }
+        };
+        let mut line_search = BacktrackingLineSearch::<V>::default();
+
+        let error = match line_search.take_optimal_step(
+            &mut x,
+            &mut delta,
+            &error_y,
+            &fun,
+            &|_| Ok(()),
+            &mut convergence,
+        ) {
+            Ok(_) => panic!("fatal trial error unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        let operator_error = error.operator_error().unwrap();
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Fatal);
+        assert_eq!(
+            operator_error.downcast_ref::<ModelError>().unwrap().0,
+            "broken constitutive law"
+        );
+        assert_eq!(calls.get(), 2);
+        assert_eq!(x[0], 1.0);
     }
 }

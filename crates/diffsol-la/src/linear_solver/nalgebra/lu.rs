@@ -49,7 +49,7 @@ impl<T: NalgebraScalar> LinearSolver<NalgebraMat<T>> for LU<T> {
             .matrix
             .as_mut()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
-        op.matrix_inplace(matrix);
+        op.matrix_inplace(matrix)?;
         self.lu = Some(matrix.data.clone().lu());
         Ok(())
     }

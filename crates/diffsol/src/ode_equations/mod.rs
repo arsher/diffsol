@@ -723,14 +723,14 @@ mod tests {
     fn ode_equation_test() {
         let (problem, _soln) = exponential_decay_problem::<Mcpu>(false);
         let y = problem.context().vector_from_vec(vec![1.0, 1.0]);
-        let rhs_y = problem.eqn.rhs().call(&y, 0.0);
+        let rhs_y = problem.eqn.rhs().call(&y, 0.0).unwrap();
         let expect_rhs_y = problem.context().vector_from_vec(vec![-0.1, -0.1]);
         rhs_y.assert_eq_st(&expect_rhs_y, 1e-10);
-        let jac_rhs_y = problem.eqn.rhs().jac_mul(&y, 0.0, &y);
+        let jac_rhs_y = problem.eqn.rhs().jac_mul(&y, 0.0, &y).unwrap();
         let expect_jac_rhs_y = problem.context().vector_from_vec(vec![-0.1, -0.1]);
         jac_rhs_y.assert_eq_st(&expect_jac_rhs_y, 1e-10);
         assert!(problem.eqn.mass().is_none());
-        let jac = problem.eqn.rhs().jacobian(&y, 0.0);
+        let jac = problem.eqn.rhs().jacobian(&y, 0.0).unwrap();
         assert_eq!(jac.get_index(0, 0), -0.1);
         assert_eq!(jac.get_index(1, 1), -0.1);
         assert_eq!(jac.get_index(0, 1), 0.0);
@@ -741,13 +741,13 @@ mod tests {
     fn ode_with_mass_test() {
         let (problem, _soln) = exponential_decay_with_algebraic_problem::<Mcpu>(false);
         let y = problem.context().vector_from_vec(vec![1.0, 1.0, 1.0]);
-        let rhs_y = problem.eqn.rhs().call(&y, 0.0);
+        let rhs_y = problem.eqn.rhs().call(&y, 0.0).unwrap();
         let expect_rhs_y = problem.context().vector_from_vec(vec![-0.1, -0.1, 0.0]);
         rhs_y.assert_eq_st(&expect_rhs_y, 1e-10);
-        let jac_rhs_y = problem.eqn.rhs().jac_mul(&y, 0.0, &y);
+        let jac_rhs_y = problem.eqn.rhs().jac_mul(&y, 0.0, &y).unwrap();
         let expect_jac_rhs_y = problem.context().vector_from_vec(vec![-0.1, -0.1, 0.0]);
         jac_rhs_y.assert_eq_st(&expect_jac_rhs_y, 1e-10);
-        let mass = problem.eqn.mass().unwrap().matrix(0.0);
+        let mass = problem.eqn.mass().unwrap().matrix(0.0).unwrap();
         assert_eq!(mass.get_index(0, 0), 1.);
         assert_eq!(mass.get_index(1, 1), 1.);
         assert_eq!(mass.get_index(2, 2), 0.);
@@ -757,7 +757,7 @@ mod tests {
         assert_eq!(mass.get_index(2, 0), 0.);
         assert_eq!(mass.get_index(1, 2), 0.);
         assert_eq!(mass.get_index(2, 1), 0.);
-        let jac = problem.eqn.rhs().jacobian(&y, 0.0);
+        let jac = problem.eqn.rhs().jacobian(&y, 0.0).unwrap();
         assert_eq!(jac.get_index(0, 0), -0.1);
         assert_eq!(jac.get_index(1, 1), -0.1);
         assert_eq!(jac.get_index(2, 2), 1.0);
@@ -827,6 +827,7 @@ mod tests {
         eqn_ref
             .rhs()
             .call(&y, 0.0)
+            .unwrap()
             .assert_eq_st(&problem.context().vector_from_vec(vec![-0.1, -0.1]), 1e-12);
         assert!(eqn_ref.mass().is_none());
         assert!(eqn_ref.root().is_none());

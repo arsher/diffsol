@@ -140,12 +140,14 @@ where
 
         state.set_problem(problem)?;
         let root_finder = if integrate_main_eqn {
-            problem.eqn.root().map(|root_fn| {
+            if let Some(root_fn) = problem.eqn.root() {
                 let root_finder =
                     RootFinder::new(root_fn.nout(), problem.eqn.nstates(), ctx.clone());
-                root_finder.init(&root_fn, &state.y, state.t);
-                root_finder
-            })
+                root_finder.init(&root_fn, &state.y, state.t)?;
+                Some(root_finder)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -450,7 +452,7 @@ where
                 (self.problem.eqn.root(), self.root_finder.as_ref())
             {
                 let state = &self.state;
-                root_finder.init(&root_fn, &state.y, state.t);
+                root_finder.init(&root_fn, &state.y, state.t)?;
             }
             // reinitialise tstop if needed
             if let Some(t_stop) = self.tstop {
@@ -539,7 +541,7 @@ where
         i: usize,
         h: Eqn::T,
         augmented_eqn: Option<&mut impl AugmentedOdeEquations<Eqn>>,
-    ) {
+    ) -> Result<(), DiffsolError> {
         let t = self.state.t + self.tableau.c().get_index(i) * h;
 
         // main equation
@@ -560,7 +562,7 @@ where
             self.problem
                 .eqn
                 .rhs()
-                .call_inplace(&self.old_state.y, t, &mut self.old_state.dy);
+                .call_inplace(&self.old_state.y, t, &mut self.old_state.dy)?;
             self.diff
                 .column_mut(i)
                 .axpy(h, &self.old_state.dy, Eqn::T::zero());
@@ -568,7 +570,7 @@ where
             // calculate dg and store in gdiff
             if self.problem.integrate_out {
                 let out = self.problem.eqn.out().unwrap();
-                out.call_inplace(&self.old_state.y, t, &mut self.old_state.dg);
+                out.call_inplace(&self.old_state.y, t, &mut self.old_state.dg)?;
                 self.gdiff
                     .column_mut(i)
                     .axpy(h, &self.old_state.dg, Eqn::T::zero());
@@ -590,7 +592,7 @@ where
 
                 aug_eqn
                     .rhs()
-                    .call_inplace(&self.old_state.s[j], t, &mut self.old_state.ds[j]);
+                    .call_inplace(&self.old_state.s[j], t, &mut self.old_state.ds[j])?;
 
                 self.sdiff[j]
                     .column_mut(i)
@@ -598,13 +600,14 @@ where
 
                 // calculate sdg and store in sgdiff
                 if let Some(out) = aug_eqn.out() {
-                    out.call_inplace(&self.old_state.s[j], t, &mut self.old_state.dsg[j]);
+                    out.call_inplace(&self.old_state.s[j], t, &mut self.old_state.dsg[j])?;
                     self.sgdiff[j]
                         .column_mut(i)
                         .axpy(h, &self.old_state.dsg[j], Eqn::T::zero());
                 }
             }
         }
+        Ok(())
     }
 
     fn predict_stage_sdirk(
@@ -684,7 +687,7 @@ where
             // calculate dg and store in gdiff
             if self.problem.integrate_out {
                 let out = self.problem.eqn.out().unwrap();
-                out.call_inplace(&self.old_state.y, t, &mut self.old_state.dg);
+                out.call_inplace(&self.old_state.y, t, &mut self.old_state.dg)?;
                 self.gdiff
                     .column_mut(i)
                     .axpy(h, &self.old_state.dg, Eqn::T::zero());
@@ -745,7 +748,7 @@ where
 
                 // calculate sdg and store in sgdiff
                 if let Some(out) = op.eqn().out() {
-                    out.call_inplace(&self.old_state.s[j], t, &mut self.old_state.dsg[j]);
+                    out.call_inplace(&self.old_state.s[j], t, &mut self.old_state.dsg[j])?;
                     self.sgdiff[j]
                         .column_mut(i)
                         .axpy(h, &self.old_state.dsg[j], Eqn::T::zero());
@@ -947,7 +950,7 @@ where
                 &root_fn,
                 &self.state.y,
                 self.state.t,
-            );
+            )?;
             if let Some((root, root_idx)) = ret {
                 return Ok(OdeSolverStopReason::RootFound(root, root_idx));
             }

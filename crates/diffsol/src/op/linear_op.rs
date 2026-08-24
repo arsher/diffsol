@@ -1,5 +1,5 @@
 use super::Op;
-use crate::{Matrix, Vector};
+use crate::{Matrix, OperatorResult, Vector};
 use num_traits::{One, Zero};
 
 /// LinearOp is a trait for linear operators (i.e. they only depend linearly on the input `x`), see [crate::NonLinearOp] for a non-linear op.
@@ -8,44 +8,51 @@ use num_traits::{One, Zero};
 /// It extends the [Op] trait with methods for calling the operator via a GEMV-like operation (i.e. `y = t * A * x + beta * y`), and for computing the matrix representation of the operator.
 pub trait LinearOp: Op {
     /// Compute the operator `y = A(t) * x` at a given state and time, the default implementation uses [Self::gemv_inplace].
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         let beta = Self::T::zero();
-        self.gemv_inplace(x, t, beta, y);
+        self.gemv_inplace(x, t, beta, y)
     }
 
     /// Compute the operator via a GEMV operation (i.e. `y = A(t) * x + beta * y`)
-    fn gemv_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V);
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult;
 
     /// Compute the matrix representation of the operator `A(t)` and return it.
     /// See [Self::matrix_inplace] for a non-allocating version.
-    fn matrix(&self, t: Self::T) -> Self::M {
+    fn matrix(&self, t: Self::T) -> OperatorResult<Self::M> {
         let mut y = Self::M::new_from_sparsity(
             self.nstates(),
             self.nstates(),
             self.sparsity(),
             self.context().clone(),
         );
-        self.matrix_inplace(t, &mut y);
-        y
+        self.matrix_inplace(t, &mut y)?;
+        Ok(y)
     }
 
     /// Compute the matrix representation of the operator `A(t)` and store it in the matrix `y`.
     /// The default implementation of this method computes the matrix using [Self::gemv_inplace],
     /// but it can be overriden for more efficient implementations.
-    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
-        self._default_matrix_inplace(t, y);
+    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self._default_matrix_inplace(t, y)
     }
 
     /// Default implementation of the matrix computation, see [Self::matrix_inplace].
-    fn _default_matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn _default_matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         let mut v = Self::V::zeros(self.nstates(), self.context().clone());
         let mut col = Self::V::zeros(self.nout(), self.context().clone());
         for j in 0..self.nstates() {
             v.set_index(j, Self::T::one());
-            self.call_inplace(&v, t, &mut col);
+            self.call_inplace(&v, t, &mut col)?;
             y.set_column(j, &col);
             v.set_index(j, Self::T::zero());
         }
+        Ok(())
     }
 
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -55,31 +62,38 @@ pub trait LinearOp: Op {
 
 pub trait LinearOpTranspose: LinearOp {
     /// Compute the transpose of the operator via a GEMV operation (i.e. `y = A(t)^T * x + beta * y`)
-    fn gemv_transpose_inplace(&self, _x: &Self::V, _t: Self::T, _beta: Self::T, _y: &mut Self::V);
+    fn gemv_transpose_inplace(
+        &self,
+        _x: &Self::V,
+        _t: Self::T,
+        _beta: Self::T,
+        _y: &mut Self::V,
+    ) -> OperatorResult;
 
     /// Compute the transpose of the operator `y = A(t)^T * x` at a given state and time, the default implementation uses [Self::gemv_transpose_inplace].
-    fn call_transpose_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_transpose_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         let beta = Self::T::zero();
-        self.gemv_transpose_inplace(x, t, beta, y);
+        self.gemv_transpose_inplace(x, t, beta, y)
     }
 
     /// Compute the matrix representation of the transpose of the operator `A(t)^T` and store it in the matrix `y`.
     /// The default implementation of this method computes the matrix using [Self::gemv_transpose_inplace],
     /// but it can be overriden for more efficient implementations.
-    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) {
-        self._default_transpose_inplace(t, y);
+    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self._default_transpose_inplace(t, y)
     }
 
     /// Default implementation of the tranpose computation, see [Self::transpose_inplace].
-    fn _default_transpose_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn _default_transpose_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         let mut v = Self::V::zeros(self.nstates(), self.context().clone());
         let mut col = Self::V::zeros(self.nout(), self.context().clone());
         for j in 0..self.nstates() {
             v.set_index(j, Self::T::one());
-            self.call_transpose_inplace(&v, t, &mut col);
+            self.call_transpose_inplace(&v, t, &mut col)?;
             y.set_column(j, &col);
             v.set_index(j, Self::T::zero());
         }
+        Ok(())
     }
     fn transpose_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         None
@@ -139,7 +153,8 @@ pub trait LinearOpSens: LinearOp {
 mod tests {
     use crate::{
         context::nalgebra::NalgebraContext, matrix::dense_nalgebra_serial::NalgebraMat,
-        matrix::Matrix, DenseMatrix, LinearOp, LinearOpSens, LinearOpTranspose, Op, Vector,
+        matrix::Matrix, DenseMatrix, LinearOp, LinearOpSens, LinearOpTranspose, Op, OperatorResult,
+        Vector,
     };
 
     type M = NalgebraMat<f64>;
@@ -169,7 +184,13 @@ mod tests {
     }
 
     impl LinearOp for FakeLinearOp {
-        fn gemv_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+        fn gemv_inplace(
+            &self,
+            x: &Self::V,
+            _t: Self::T,
+            beta: Self::T,
+            y: &mut Self::V,
+        ) -> OperatorResult {
             let out = Self::V::from_vec(
                 vec![
                     2.0 * x.get_index(0) + 3.0 * x.get_index(1),
@@ -178,11 +199,18 @@ mod tests {
                 NalgebraContext::default(),
             );
             y.axpy(1.0, &out, beta);
+            Ok(())
         }
     }
 
     impl LinearOpTranspose for FakeLinearOp {
-        fn gemv_transpose_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+        fn gemv_transpose_inplace(
+            &self,
+            x: &Self::V,
+            _t: Self::T,
+            beta: Self::T,
+            y: &mut Self::V,
+        ) -> OperatorResult {
             let out = Self::V::from_vec(
                 vec![
                     2.0 * x.get_index(0) - x.get_index(1),
@@ -191,6 +219,7 @@ mod tests {
                 NalgebraContext::default(),
             );
             y.axpy(1.0, &out, beta);
+            Ok(())
         }
     }
 
@@ -215,27 +244,28 @@ mod tests {
         let v = crate::NalgebraVec::from_vec(vec![3.0, -1.0], NalgebraContext::default());
         let mut y = crate::NalgebraVec::from_vec(vec![1.0, 1.0], NalgebraContext::default());
 
-        op.call_inplace(&x, 0.0, &mut y);
+        op.call_inplace(&x, 0.0, &mut y).unwrap();
         y.assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![8.0, 7.0], NalgebraContext::default()),
             1e-12,
         );
 
-        let matrix = op.matrix(0.0);
+        let matrix = op.matrix(0.0).unwrap();
         assert_eq!(matrix.get_index(0, 0), 2.0);
         assert_eq!(matrix.get_index(1, 0), -1.0);
         assert_eq!(matrix.get_index(0, 1), 3.0);
         assert_eq!(matrix.get_index(1, 1), 4.0);
 
         let mut transpose = M::zeros(2, 2, NalgebraContext::default());
-        op.transpose_inplace(0.0, &mut transpose);
+        op.transpose_inplace(0.0, &mut transpose).unwrap();
         assert_eq!(transpose.get_index(0, 0), 2.0);
         assert_eq!(transpose.get_index(1, 0), 3.0);
         assert_eq!(transpose.get_index(0, 1), -1.0);
         assert_eq!(transpose.get_index(1, 1), 4.0);
 
         let mut transpose_call = crate::NalgebraVec::zeros(2, NalgebraContext::default());
-        op.call_transpose_inplace(&x, 0.0, &mut transpose_call);
+        op.call_transpose_inplace(&x, 0.0, &mut transpose_call)
+            .unwrap();
         transpose_call.assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![0.0, 11.0], NalgebraContext::default()),
             1e-12,

@@ -1,7 +1,7 @@
 use num_traits::One;
 use std::{cell::RefCell, rc::Rc};
 
-use crate::{LinearOp, Matrix, Op, Vector};
+use crate::{LinearOp, Matrix, Op, OperatorResult, Vector};
 
 use super::nonlinear_op::NonLinearOpJacobian;
 
@@ -58,17 +58,24 @@ impl<C: NonLinearOpJacobian> Op for LinearisedOp<C> {
 }
 
 impl<C: NonLinearOpJacobian> LinearOp for LinearisedOp<C> {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
-        self.callable.jac_mul_inplace(&self.x, t, x, y);
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
+        self.callable.jac_mul_inplace(&self.x, t, x, y)
     }
-    fn gemv_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         let mut tmp = self.tmp.borrow_mut();
         tmp.copy_from(y);
-        self.callable.jac_mul_inplace(&self.x, t, x, y);
+        self.callable.jac_mul_inplace(&self.x, t, x, y)?;
         y.axpy(beta, &tmp, Self::T::one());
+        Ok(())
     }
-    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
-        self.callable.jacobian_inplace(&self.x, t, y);
+    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self.callable.jacobian_inplace(&self.x, t, y)
     }
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.callable.jacobian_sparsity()
@@ -113,13 +120,20 @@ mod tests {
     }
 
     impl NonLinearOp for FakeJacOp {
-        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) {
+        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) -> crate::OperatorResult {
             y.copy_from(x);
+            Ok(())
         }
     }
 
     impl NonLinearOpJacobian for FakeJacOp {
-        fn jac_mul_inplace(&self, x: &Self::V, _t: Self::T, v: &Self::V, y: &mut Self::V) {
+        fn jac_mul_inplace(
+            &self,
+            x: &Self::V,
+            _t: Self::T,
+            v: &Self::V,
+            y: &mut Self::V,
+        ) -> crate::OperatorResult {
             y.copy_from(&Self::V::from_vec(
                 vec![
                     x.get_index(0) * v.get_index(0) + v.get_index(1),
@@ -127,6 +141,7 @@ mod tests {
                 ],
                 NalgebraContext::default(),
             ));
+            Ok(())
         }
     }
 
@@ -148,21 +163,21 @@ mod tests {
 
         let v = crate::NalgebraVec::from_vec(vec![5.0, 6.0], NalgebraContext::default());
         let mut y = crate::NalgebraVec::zeros(2, NalgebraContext::default());
-        op.call_inplace(&v, 0.0, &mut y);
+        op.call_inplace(&v, 0.0, &mut y).unwrap();
         y.assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![21.0, 34.0], NalgebraContext::default()),
             1e-12,
         );
 
         y = crate::NalgebraVec::from_vec(vec![1.0, 2.0], NalgebraContext::default());
-        op.gemv_inplace(&v, 0.0, 0.5, &mut y);
+        op.gemv_inplace(&v, 0.0, 0.5, &mut y).unwrap();
         y.assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![21.5, 35.0], NalgebraContext::default()),
             1e-12,
         );
 
         let mut matrix = M::zeros(2, 2, NalgebraContext::default());
-        op.matrix_inplace(0.0, &mut matrix);
+        op.matrix_inplace(0.0, &mut matrix).unwrap();
         assert_eq!(matrix.get_index(0, 0), 3.0);
         assert_eq!(matrix.get_index(1, 0), 2.0);
         assert_eq!(matrix.get_index(0, 1), 1.0);

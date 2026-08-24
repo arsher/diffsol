@@ -165,12 +165,12 @@ where
         self.rk.problem()
     }
 
-    fn jacobian(&self) -> Option<std::cell::Ref<'_, <Eqn>::M>> {
-        None
+    fn jacobian(&self) -> Result<Option<std::cell::Ref<'_, <Eqn>::M>>, DiffsolError> {
+        Ok(None)
     }
 
-    fn mass(&self) -> Option<std::cell::Ref<'_, <Eqn>::M>> {
-        None
+    fn mass(&self) -> Result<Option<std::cell::Ref<'_, <Eqn>::M>>, DiffsolError> {
+        Ok(None)
     }
 
     fn order(&self) -> usize {
@@ -207,7 +207,7 @@ where
             // start a step attempt
             self.rk.start_step_attempt(h, self.augmented_eqn.as_mut());
             for i in 1..self.rk.tableau().s() {
-                self.rk.do_stage(i, h, self.augmented_eqn.as_mut());
+                self.rk.do_stage(i, h, self.augmented_eqn.as_mut())?;
             }
             let error_norm =
                 self.rk

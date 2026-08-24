@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use crate::{Matrix, NonLinearOp, Op};
+use crate::{Matrix, NonLinearOp, Op, OperatorResult};
 
 use super::{BuilderOp, OpStatistics, ParameterisedOp};
 
@@ -39,8 +39,13 @@ where
     M: Matrix,
     F: Fn(&M::V, &M::V, M::T, &mut M::V),
 {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, _t0: Self::T, _p: &Self::V) {
-        // Do nothing
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        _t0: Self::T,
+        _p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        Ok(())
     }
     fn set_nstates(&mut self, nstates: usize) {
         self.nstates = nstates;
@@ -84,8 +89,9 @@ where
     M: Matrix,
     F: Fn(&M::V, &M::V, M::T, &mut M::V),
 {
-    fn call_inplace(&self, x: &M::V, t: M::T, y: &mut M::V) {
+    fn call_inplace(&self, x: &M::V, t: M::T, y: &mut M::V) -> OperatorResult {
         self.op.statistics.borrow_mut().increment_call();
-        (self.op.func)(x, self.p, t, y)
+        (self.op.func)(x, self.p, t, y);
+        Ok(())
     }
 }

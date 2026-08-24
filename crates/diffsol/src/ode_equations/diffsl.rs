@@ -28,8 +28,8 @@ use crate::{
     error::DiffsolError, jacobian::JacobianColoring, matrix::sparsity::MatrixSparsity,
     op::nonlinear_op::NonLinearOpJacobian, ConstantOp, ConstantOpSens, ConstantOpSensAdjoint,
     LinearOp, LinearOpTranspose, Matrix, MatrixHost, NonLinearOp, NonLinearOpAdjoint,
-    NonLinearOpSens, NonLinearOpSensAdjoint, OdeEquations, OdeEquationsRef, Op, Scale, Vector,
-    VectorHost,
+    NonLinearOpSens, NonLinearOpSensAdjoint, OdeEquations, OdeEquationsRef, Op, OperatorResult,
+    Scale, Vector, VectorHost,
 };
 
 /// Context for the ODE equations specified using the [DiffSL language](https://martinjrobins.github.io/diffsl/).
@@ -775,20 +775,27 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> ConstantOpSensAdjoint
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOp for DiffSlRoot<'_, M, CG> {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         self.0.context.compiler.calc_stop(
             t,
             x.as_slice(),
             self.0.context.data.borrow_mut().as_mut_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
     for DiffSlRoot<'_, M, CG>
 {
-    fn jac_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         let stop = self.0.context.tmp_root.borrow();
         self.0.context.compiler.calc_stop_grad(
             t,
@@ -799,6 +806,7 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
             stop.as_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
@@ -868,20 +876,27 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpSensAdjoint
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOp for DiffSlReset<'_, M, CG> {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         self.0.context.compiler.reset(
             t,
             x.as_slice(),
             self.0.context.data.borrow_mut().as_mut_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
     for DiffSlReset<'_, M, CG>
 {
-    fn jac_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         self.0.context.ddata.borrow_mut().fill(M::T::zero());
         let tmp = self.0.context.tmp.borrow();
         self.0.context.compiler.reset_grad(
@@ -893,6 +908,7 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
             tmp.as_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
@@ -969,20 +985,27 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpSensAdjoint
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOp for DiffSlOut<'_, M, CG> {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         self.0.context.compiler.calc_out(
             t,
             x.as_slice(),
             self.0.context.data.borrow_mut().as_mut_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
     for DiffSlOut<'_, M, CG>
 {
-    fn jac_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         // init ddata with all zero except for out
         let mut ddata = self.0.context.ddata.borrow_mut();
         ddata.fill(M::T::zero());
@@ -995,6 +1018,7 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
             self.0.context.tmp_out.borrow().as_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
@@ -1070,20 +1094,27 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpSensAdjoint
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOp for DiffSlRhs<'_, M, CG> {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         self.0.context.compiler.rhs(
             t,
             x.as_slice(),
             self.0.context.data.borrow_mut().as_mut_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
     for DiffSlRhs<'_, M, CG>
 {
-    fn jac_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         self.0.context.ddata.borrow_mut().fill(M::T::zero());
         let tmp = self.0.context.tmp.borrow();
         self.0.context.compiler.rhs_grad(
@@ -1095,13 +1126,14 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpJacobian
             tmp.as_slice(),
             y.as_mut_slice(),
         );
+        Ok(())
     }
 
-    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
         if let Some(coloring) = &self.0.rhs_coloring {
-            coloring.jacobian_inplace(self, x, t, y);
+            coloring.jacobian_inplace(self, x, t, y)
         } else {
-            self._default_jacobian_inplace(x, t, y);
+            self._default_jacobian_inplace(x, t, y)
         }
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -1218,7 +1250,13 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> NonLinearOpSensAdjoint
 }
 
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> LinearOp for DiffSlMass<'_, M, CG> {
-    fn gemv_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         let mut tmp = self.0.context.tmp.borrow_mut();
         self.0.context.compiler.mass(
             t,
@@ -1229,13 +1267,14 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> LinearOp for DiffSlMass<
 
         // y = tmp + beta * y
         y.axpy(M::T::one(), &tmp, beta);
+        Ok(())
     }
 
-    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         if let Some(coloring) = &self.0.mass_coloring {
-            coloring.matrix_inplace(self, t, y);
+            coloring.matrix_inplace(self, t, y)
         } else {
-            self._default_matrix_inplace(t, y);
+            self._default_matrix_inplace(t, y)
         }
     }
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -1246,7 +1285,13 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> LinearOp for DiffSlMass<
 impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> LinearOpTranspose
     for DiffSlMass<'_, M, CG>
 {
-    fn gemv_transpose_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_transpose_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         // scale y by beta
         y.mul_assign(Scale(beta));
 
@@ -1265,13 +1310,14 @@ impl<M: MatrixHost<T: DiffSlScalar>, CG: CodegenModule> LinearOpTranspose
             self.0.context.ddata.borrow_mut().as_mut_slice(),
             tmp.as_mut_slice(),
         );
+        Ok(())
     }
 
-    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         if let Some(coloring) = &self.0.mass_transpose_coloring {
-            coloring.matrix_inplace(self, t, y);
+            coloring.matrix_inplace(self, t, y)
         } else {
-            self._default_matrix_inplace(t, y);
+            self._default_matrix_inplace(t, y)
         }
     }
     fn transpose_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -1510,7 +1556,7 @@ mod tests {
         let reset_op = eqn.reset().expect("model must have a reset operator");
 
         // reset(x, t) = [2*3+3, 2+3] = [9, 5]
-        let reset_val = reset_op.call(&x, t);
+        let reset_val = reset_op.call(&x, t).unwrap();
         let reset_expected = ctx.vector_from_vec(vec![
             M::T::from_f64(9.0).unwrap(),
             M::T::from_f64(5.0).unwrap(),
@@ -1520,7 +1566,7 @@ mod tests {
         // jac_mul: J*v, J=[[2,0],[0,1]], v=[3,-1] => [6,-1]
         let v = ctx.vector_from_vec(vec![M::T::from_f64(3.0).unwrap(), -M::T::one()]);
         let mut y = ctx.vector_from_vec(vec![M::T::zero(), M::T::zero()]);
-        reset_op.jac_mul_inplace(&x, t, &v, &mut y);
+        reset_op.jac_mul_inplace(&x, t, &v, &mut y).unwrap();
         let jac_mul_expected =
             ctx.vector_from_vec(vec![M::T::from_f64(6.0).unwrap(), -M::T::one()]);
         y.assert_eq_st(&jac_mul_expected, M::T::from_f64(1e-10).unwrap());
@@ -1649,14 +1695,14 @@ mod tests {
         let init = eqn.init().call(M::T::zero());
         let init_expect = ctx.vector_from_vec(vec![y0, M::T::zero()]);
         init.assert_eq_st(&init_expect, M::T::from_f64(1e-10).unwrap());
-        let rhs = eqn.rhs().call(&init, M::T::zero());
+        let rhs = eqn.rhs().call(&init, M::T::zero()).unwrap();
         let rhs_expect = ctx.vector_from_vec(vec![
             r * y0 * (M::T::one() - y0 / k),
             M::T::from_f64(2.0).unwrap() * y0,
         ]);
         rhs.assert_eq_st(&rhs_expect, M::T::from_f64(1e-10).unwrap());
         let v = ctx.vector_from_vec(vec![M::T::one(), M::T::one()]);
-        let rhs_jac = eqn.rhs().jac_mul(&init, M::T::zero(), &v);
+        let rhs_jac = eqn.rhs().jac_mul(&init, M::T::zero(), &v).unwrap();
         let rhs_jac_expect =
             ctx.vector_from_vec(vec![r * (M::T::one() - y0 / k) - r * y0 / k, M::T::one()]);
         rhs_jac.assert_eq_st(&rhs_jac_expect, M::T::from_f64(1e-10).unwrap());
@@ -1664,7 +1710,8 @@ mod tests {
         let v = ctx.vector_from_vec(vec![M::T::one(), M::T::one()]);
         eqn.mass()
             .unwrap()
-            .call_inplace(&v, M::T::zero(), &mut mass_y);
+            .call_inplace(&v, M::T::zero(), &mut mass_y)
+            .unwrap();
         let mass_y_expect = ctx.vector_from_vec(vec![M::T::one(), M::T::zero()]);
         mass_y.assert_eq_st(&mass_y_expect, M::T::from_f64(1e-10).unwrap());
 
@@ -1807,7 +1854,7 @@ mod tests {
         eqn.set_params(&p);
 
         let x = eqn.init().call(M::T::zero());
-        let root = eqn.root().unwrap().call(&x, M::T::zero());
+        let root = eqn.root().unwrap().call(&x, M::T::zero()).unwrap();
         root.assert_eq_st(
             &ctx.vector_from_vec(vec![M::T::from_f64(2.5).unwrap()]),
             M::T::from_f64(1e-10).unwrap(),
@@ -1816,13 +1863,15 @@ mod tests {
         let root_op = eqn.root().unwrap();
         let v = ctx.vector_from_vec(vec![M::T::from_f64(2.0).unwrap(), -M::T::one()]);
         let mut root_jvp = ctx.vector_from_vec(vec![M::T::zero()]);
-        root_op.jac_mul_inplace(&x, M::T::zero(), &v, &mut root_jvp);
+        root_op
+            .jac_mul_inplace(&x, M::T::zero(), &v, &mut root_jvp)
+            .unwrap();
         root_jvp.assert_eq_st(
             &ctx.vector_from_vec(vec![M::T::from_f64(2.0).unwrap()]),
             M::T::from_f64(1e-10).unwrap(),
         );
 
-        let out = eqn.out().unwrap().call(&x, M::T::zero());
+        let out = eqn.out().unwrap().call(&x, M::T::zero()).unwrap();
         out.assert_eq_st(
             &ctx.vector_from_vec(vec![
                 M::T::from_f64(9.0).unwrap(),
@@ -1927,7 +1976,7 @@ mod tests {
         let t = M::T::zero();
 
         // forward output
-        let out_val = out_op.call(&x, t);
+        let out_val = out_op.call(&x, t).unwrap();
         let out_expected = ctx.vector_from_vec(vec![
             M::T::from_f64(18.0).unwrap(),
             M::T::from_f64(6.0).unwrap(),
@@ -2057,26 +2106,26 @@ mod tests {
         let one_tenth = M::T::from_f64(0.1).unwrap();
         let p = ctx.vector_from_vec(Vec::<M::T>::new());
 
-        let rhs_model_0 = eqn.rhs().call(&y, t);
+        let rhs_model_0 = eqn.rhs().call(&y, t).unwrap();
         let rhs_model_0_expected =
             ctx.vector_from_vec(vec![M::T::from_f64(1.0).unwrap() * one_tenth]);
         rhs_model_0.assert_eq_st(&rhs_model_0_expected, tol);
 
         eqn.set_model_index(1);
-        let rhs_model_1 = eqn.rhs().call(&y, t);
+        let rhs_model_1 = eqn.rhs().call(&y, t).unwrap();
         let rhs_model_1_expected =
             ctx.vector_from_vec(vec![M::T::from_f64(2.0).unwrap() * one_tenth]);
         rhs_model_1.assert_eq_st(&rhs_model_1_expected, tol);
 
         eqn.set_model_index(2);
-        let rhs_model_2 = eqn.rhs().call(&y, t);
+        let rhs_model_2 = eqn.rhs().call(&y, t).unwrap();
         let rhs_model_2_expected =
             ctx.vector_from_vec(vec![M::T::from_f64(4.0).unwrap() * one_tenth]);
         rhs_model_2.assert_eq_st(&rhs_model_2_expected, tol);
 
         // set_params preserves the current model index.
         eqn.set_params(&p);
-        let rhs_after_set_params = eqn.rhs().call(&y, t);
+        let rhs_after_set_params = eqn.rhs().call(&y, t).unwrap();
         rhs_after_set_params.assert_eq_st(&rhs_model_2_expected, tol);
     }
 
@@ -2139,16 +2188,17 @@ mod tests {
 
         let t = M::T::zero();
         let x_compiled = compiled.init().call(t);
-        let rhs_compiled = compiled.rhs().call(&x_compiled, t);
+        let rhs_compiled = compiled.rhs().call(&x_compiled, t).unwrap();
         let v = ctx.vector_from_vec(vec![M::T::one(), M::T::one()]);
         let mut mass_compiled = ctx.vector_from_vec(vec![M::T::zero(), M::T::zero()]);
         compiled
             .mass()
             .unwrap()
-            .call_inplace(&v, t, &mut mass_compiled);
-        let root_compiled = compiled.root().unwrap().call(&x_compiled, t);
-        let out_compiled = compiled.out().unwrap().call(&x_compiled, t);
-        let reset_compiled = compiled.reset().unwrap().call(&x_compiled, t);
+            .call_inplace(&v, t, &mut mass_compiled)
+            .unwrap();
+        let root_compiled = compiled.root().unwrap().call(&x_compiled, t).unwrap();
+        let out_compiled = compiled.out().unwrap().call(&x_compiled, t).unwrap();
+        let reset_compiled = compiled.reset().unwrap().call(&x_compiled, t).unwrap();
         let external_object = compiled.to_external_object().unwrap();
         let mut imported =
             DiffSl::<M, ObjectModule>::from_external_object(external_object, ctx.clone()).unwrap();
@@ -2156,19 +2206,20 @@ mod tests {
 
         let x_imported = imported.init().call(t);
         x_imported.assert_eq_st(&x_compiled, M::T::from_f64(1e-10).unwrap());
-        let rhs_imported = imported.rhs().call(&x_imported, t);
+        let rhs_imported = imported.rhs().call(&x_imported, t).unwrap();
         rhs_imported.assert_eq_st(&rhs_compiled, M::T::from_f64(1e-10).unwrap());
         let mut mass_imported = ctx.vector_from_vec(vec![M::T::zero(), M::T::zero()]);
         imported
             .mass()
             .unwrap()
-            .call_inplace(&v, t, &mut mass_imported);
+            .call_inplace(&v, t, &mut mass_imported)
+            .unwrap();
         mass_imported.assert_eq_st(&mass_compiled, M::T::from_f64(1e-10).unwrap());
-        let root_imported = imported.root().unwrap().call(&x_imported, t);
+        let root_imported = imported.root().unwrap().call(&x_imported, t).unwrap();
         root_imported.assert_eq_st(&root_compiled, M::T::from_f64(1e-10).unwrap());
-        let out_imported = imported.out().unwrap().call(&x_imported, t);
+        let out_imported = imported.out().unwrap().call(&x_imported, t).unwrap();
         out_imported.assert_eq_st(&out_compiled, M::T::from_f64(1e-10).unwrap());
-        let reset_imported = imported.reset().unwrap().call(&x_imported, t);
+        let reset_imported = imported.reset().unwrap().call(&x_imported, t).unwrap();
         reset_imported.assert_eq_st(&reset_compiled, M::T::from_f64(1e-10).unwrap());
 
         assert_eq!(imported.context.rhs_state_deps, rhs_state_deps);
@@ -2255,8 +2306,8 @@ mod tests {
         let x_decoded = decoded.init().call(t);
         x_decoded.assert_eq_st(&x_imported, 1e-10);
 
-        let rhs_imported = imported.rhs().call(&x_imported, t);
-        let rhs_decoded = decoded.rhs().call(&x_decoded, t);
+        let rhs_imported = imported.rhs().call(&x_imported, t).unwrap();
+        let rhs_decoded = decoded.rhs().call(&x_decoded, t).unwrap();
         rhs_decoded.assert_eq_st(&rhs_imported, 1e-10);
 
         assert_eq!(decoded.context.rhs_state_deps, rhs_state_deps);

@@ -55,8 +55,13 @@ where
     M: Matrix,
     I: Fn(&M::V, M::T, &mut M::V),
 {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, _t0: Self::T, _p: &Self::V) {
-        // do nothing
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        _t0: Self::T,
+        _p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        Ok(())
     }
     fn set_nstates(&mut self, _nstates: usize) {
         // do nothing

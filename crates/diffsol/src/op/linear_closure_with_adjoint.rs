@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use crate::{
     find_matrix_non_zeros, find_transpose_non_zeros, jacobian::JacobianColoring,
-    matrix::sparsity::MatrixSparsity, LinearOp, LinearOpTranspose, Matrix, Op,
+    matrix::sparsity::MatrixSparsity, LinearOp, LinearOpTranspose, Matrix, Op, OperatorResult,
 };
 
 use super::{BuilderOp, OpStatistics, ParameterisedOp};
@@ -55,31 +55,35 @@ where
         }
     }
 
-    pub fn calculate_sparsity(&mut self, t0: M::T, p: &M::V) {
+    pub fn calculate_sparsity(&mut self, t0: M::T, p: &M::V) -> Result<(), crate::LaError> {
         let op = ParameterisedOp { op: self, p };
-        let non_zeros = find_matrix_non_zeros(&op, t0);
-        self.sparsity = Some(
-            MatrixSparsity::try_from_indices(self.nout(), self.nstates(), non_zeros.clone())
-                .expect("invalid sparsity pattern"),
-        );
+        let non_zeros = find_matrix_non_zeros(&op, t0)?;
+        self.sparsity = Some(MatrixSparsity::try_from_indices(
+            self.nout(),
+            self.nstates(),
+            non_zeros.clone(),
+        )?);
         self.coloring = Some(JacobianColoring::new(
             self.sparsity.as_ref().unwrap(),
             &non_zeros,
             self.ctx.clone(),
         ));
+        Ok(())
     }
-    pub fn calculate_adjoint_sparsity(&mut self, t0: M::T, p: &M::V) {
+    pub fn calculate_adjoint_sparsity(&mut self, t0: M::T, p: &M::V) -> Result<(), crate::LaError> {
         let op = ParameterisedOp { op: self, p };
-        let non_zeros = find_transpose_non_zeros(&op, t0);
-        self.sparsity_adjoint = Some(
-            MatrixSparsity::try_from_indices(self.nstates, self.nout, non_zeros.clone())
-                .expect("invalid sparsity pattern"),
-        );
+        let non_zeros = find_transpose_non_zeros(&op, t0)?;
+        self.sparsity_adjoint = Some(MatrixSparsity::try_from_indices(
+            self.nstates,
+            self.nout,
+            non_zeros.clone(),
+        )?);
         self.coloring_adjoint = Some(JacobianColoring::new(
             self.sparsity_adjoint.as_ref().unwrap(),
             &non_zeros,
             self.ctx.clone(),
         ));
+        Ok(())
     }
 }
 
@@ -117,9 +121,14 @@ where
     F: Fn(&M::V, &M::V, M::T, M::T, &mut M::V),
     G: Fn(&M::V, &M::V, M::T, M::T, &mut M::V),
 {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, t0: Self::T, p: &Self::V) {
-        self.calculate_sparsity(t0, p);
-        self.calculate_adjoint_sparsity(t0, p);
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        t0: Self::T,
+        p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        self.calculate_sparsity(t0, p)?;
+        self.calculate_adjoint_sparsity(t0, p)
     }
     fn set_nout(&mut self, nout: usize) {
         self.nout = nout;
@@ -138,17 +147,18 @@ where
     F: Fn(&M::V, &M::V, M::T, M::T, &mut M::V),
     G: Fn(&M::V, &M::V, M::T, M::T, &mut M::V),
 {
-    fn gemv_inplace(&self, x: &M::V, t: M::T, beta: M::T, y: &mut M::V) {
+    fn gemv_inplace(&self, x: &M::V, t: M::T, beta: M::T, y: &mut M::V) -> OperatorResult {
         self.op.statistics.borrow_mut().increment_call();
-        (self.op.func)(x, self.p, t, beta, y)
+        (self.op.func)(x, self.p, t, beta, y);
+        Ok(())
     }
 
-    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         self.op.statistics.borrow_mut().increment_matrix();
         if let Some(coloring) = &self.op.coloring {
-            coloring.matrix_inplace(self, t, y);
+            coloring.matrix_inplace(self, t, y)
         } else {
-            self._default_matrix_inplace(t, y);
+            self._default_matrix_inplace(t, y)
         }
     }
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -162,14 +172,21 @@ where
     F: Fn(&M::V, &M::V, M::T, M::T, &mut M::V),
     G: Fn(&M::V, &M::V, M::T, M::T, &mut M::V),
 {
-    fn gemv_transpose_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
-        (self.op.func_adjoint)(x, self.p, t, beta, y)
+    fn gemv_transpose_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
+        (self.op.func_adjoint)(x, self.p, t, beta, y);
+        Ok(())
     }
-    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         if let Some(coloring) = &self.op.coloring_adjoint {
-            coloring.matrix_inplace(self, t, y);
+            coloring.matrix_inplace(self, t, y)
         } else {
-            self._default_transpose_inplace(t, y);
+            self._default_transpose_inplace(t, y)
         }
     }
 
@@ -227,14 +244,14 @@ mod tests {
 
         let y0 = V::from_vec(vec![1.0, 1.0], NalgebraContext::default());
         let p = V::from_vec(vec![2.0, 3.0], NalgebraContext::default());
-        BuilderOp::calculate_sparsity(&mut op, &y0, 0.0, &p);
+        BuilderOp::calculate_sparsity(&mut op, &y0, 0.0, &p).unwrap();
 
         assert_eq!(op.nstates(), 2);
         assert_eq!(op.nout(), 2);
         assert_eq!(op.nparams(), 2);
 
         let pop = crate::ParameterisedOp::new(&op, &p);
-        let matrix = pop.matrix(0.0);
+        let matrix = pop.matrix(0.0).unwrap();
         assert_eq!(matrix.get_index(0, 0), 2.0);
         assert_eq!(matrix.get_index(1, 0), 1.0);
         assert_eq!(matrix.get_index(0, 1), 0.0);
@@ -242,7 +259,7 @@ mod tests {
         assert!(pop.sparsity().is_some());
 
         let mut transpose = M::zeros(2, 2, NalgebraContext::default());
-        pop.transpose_inplace(0.0, &mut transpose);
+        pop.transpose_inplace(0.0, &mut transpose).unwrap();
         assert_eq!(transpose.get_index(0, 0), 2.0);
         assert_eq!(transpose.get_index(1, 0), 0.0);
         assert_eq!(transpose.get_index(0, 1), 0.0);
@@ -251,7 +268,7 @@ mod tests {
 
         let x = V::from_vec(vec![4.0, 5.0], NalgebraContext::default());
         let mut y = V::from_vec(vec![1.0, 1.0], NalgebraContext::default());
-        pop.gemv_inplace(&x, 0.0, 0.5, &mut y);
+        pop.gemv_inplace(&x, 0.0, 0.5, &mut y).unwrap();
         y.assert_eq_st(
             &V::from_vec(vec![8.5, 19.5], NalgebraContext::default()),
             1e-12,

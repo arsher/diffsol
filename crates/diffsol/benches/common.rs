@@ -42,6 +42,25 @@ macro_rules! bench_implicit_cg {
 }
 pub(crate) use bench_implicit_cg;
 
+macro_rules! bench_implicit_cg_result {
+    ($g:ident, $name:ident, $solver:ident, $ls:ident, $problem:ident, $m:ty, $($N:expr),+ $(,)?) => {
+        $(
+            $g.bench_function(concat!(stringify!($name), "_", $N), |b| {
+                b.iter(|| {
+                    let (problem, soln) = $problem::<$m, $N>().unwrap();
+                    let t_evals = soln
+                        .solution_points
+                        .iter()
+                        .map(|sp| sp.t)
+                        .collect::<Vec<_>>();
+                    $crate::common::$solver::<_, $ls<_>>(&problem, &t_evals);
+                })
+            });
+        )+
+    };
+}
+pub(crate) use bench_implicit_cg_result;
+
 macro_rules! bench_implicit_rt {
     ($g:ident, $name:ident, $solver:ident, $ls:ident, $problem:ident, $m:ty, $($N:expr),+ $(,)?) => {
         $(

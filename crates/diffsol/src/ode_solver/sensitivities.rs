@@ -180,7 +180,7 @@ where
 
         if let OdeSolverStopReason::RootFound(_, _) = stop_reason {
             if col < t_eval.len() {
-                write_state_out(self.problem(), &self.state(), &mut ret, col, &mut tmp_nout);
+                write_state_out(self.problem(), &self.state(), &mut ret, col, &mut tmp_nout)?;
                 write_state_sens_out(
                     self.problem(),
                     &self.state(),
@@ -188,7 +188,7 @@ where
                     col,
                     &mut tmp_nout,
                     &mut tmp_nparams,
-                );
+                )?;
                 if col + 1 < ret.ncols() {
                     ret.resize_cols(col + 1);
                     for rs in &mut ret_sens {
@@ -376,12 +376,12 @@ where
     s.interpolate_inplace(t, tmp_nstates)?;
     s.interpolate_sens_inplace(t, tmp_nsens)?;
     if let Some(out) = s.problem().eqn.out() {
-        out.call_inplace(tmp_nstates, t, tmp_nout);
+        out.call_inplace(tmp_nstates, t, tmp_nout)?;
         ret.column_mut(col).copy_from(tmp_nout);
         for (j, s_j) in tmp_nsens.iter().enumerate() {
             let mut col_v = ret_sens[j].column_mut(col);
             tmp_nparams.set_index(j, Eqn::T::one());
-            out.jac_mul_inplace(tmp_nstates, t, s_j, tmp_nout);
+            out.jac_mul_inplace(tmp_nstates, t, s_j, tmp_nout)?;
             col_v.copy_from(&*tmp_nout);
             out.sens_mul_inplace(tmp_nstates, t, tmp_nparams, tmp_nout);
             col_v.add_assign(&*tmp_nout);
@@ -403,7 +403,8 @@ pub(crate) fn write_state_sens_out<Eqn>(
     col: usize,
     tmp_nout: &mut Eqn::V,
     tmp_nparams: &mut Eqn::V,
-) where
+) -> Result<(), DiffsolError>
+where
     Eqn: OdeEquationsImplicitSens,
     Eqn::V: DefaultDenseMatrix,
 {
@@ -414,7 +415,7 @@ pub(crate) fn write_state_sens_out<Eqn>(
             }
             let mut col_v = ret_sens[j].column_mut(col);
             tmp_nparams.set_index(j, Eqn::T::one());
-            out.jac_mul_inplace(state.y, state.t, state_sens, tmp_nout);
+            out.jac_mul_inplace(state.y, state.t, state_sens, tmp_nout)?;
             col_v.copy_from(&*tmp_nout);
             out.sens_mul_inplace(state.y, state.t, tmp_nparams, tmp_nout);
             col_v.add_assign(&*tmp_nout);
@@ -425,4 +426,5 @@ pub(crate) fn write_state_sens_out<Eqn>(
             sens.column_mut(col).copy_from(state_sens);
         }
     }
+    Ok(())
 }

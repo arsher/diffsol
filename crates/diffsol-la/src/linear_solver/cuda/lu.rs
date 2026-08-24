@@ -79,7 +79,7 @@ impl<T: ScalarCuda> LinearSolver<CudaMat<T>> for CudaLU<T> {
             .as_mut()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?
             .get_mut();
-        op.matrix_inplace(matrix);
+        op.matrix_inplace(matrix)?;
         let nbatch = op.context().nbatch();
         let nrows = matrix.nrows();
         let ncols = matrix.ncols();

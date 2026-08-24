@@ -87,8 +87,9 @@ pub(crate) mod tests {
         fn context(&self) -> &Self::C {
             self.matrix.context()
         }
-        fn matrix_inplace(&self, y: &mut Self::M) {
+        fn matrix_inplace(&self, y: &mut Self::M) -> crate::OperatorResult {
             y.copy_from(&self.matrix);
+            Ok(())
         }
         fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
             self.matrix.sparsity().map(|s| {

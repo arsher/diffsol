@@ -30,9 +30,15 @@ impl<V: Vector> RootFinder<V> {
 
     /// Set the lower boundary of the root search.
     /// This function should be called first after [Self::new]
-    pub fn init(&self, root_fn: &impl NonLinearOp<V = V, T = V::T>, y: &V, t: V::T) {
-        root_fn.call_inplace(y, t, &mut self.g0.borrow_mut());
+    pub fn init(
+        &self,
+        root_fn: &impl NonLinearOp<V = V, T = V::T>,
+        y: &V,
+        t: V::T,
+    ) -> Result<(), DiffsolError> {
+        root_fn.call_inplace(y, t, &mut self.g0.borrow_mut())?;
         self.t0.replace(t);
+        Ok(())
     }
 
     /// Set the upper boundary of the root search and checks for a zero crossing.
@@ -63,12 +69,12 @@ impl<V: Vector> RootFinder<V> {
         root_fn: &impl NonLinearOp<V = V, T = V::T>,
         y: &V,
         t: V::T,
-    ) -> Option<(V::T, usize)> {
+    ) -> Result<Option<(V::T, usize)>, DiffsolError> {
         let g1 = &mut *self.g1.borrow_mut();
         let g0 = &mut *self.g0.borrow_mut();
         let gmid = &mut *self.gmid.borrow_mut();
         let ymid = &mut *self.ymid.borrow_mut();
-        root_fn.call_inplace(y, t, g1);
+        root_fn.call_inplace(y, t, g1)?;
 
         let (rootfnd, _gfracmax, imax) = g0.root_finding(g1);
 
@@ -77,14 +83,14 @@ impl<V: Vector> RootFinder<V> {
             // setup g0 for next iteration
             std::mem::swap(g0, g1);
             self.t0.replace(t);
-            return if rootfnd {
+            return Ok(if rootfnd {
                 // found a root at the upper boundary and no other sign change, return the root
                 let idx = Self::find_zero_index(g0); // g0 now holds the newly-swapped g1
                 Some((t, idx))
             } else {
                 // no root found or sign change, return None
                 None
-            };
+            });
         }
 
         // otherwise we need to do the modified secant method to find the root
@@ -124,8 +130,8 @@ impl<V: Vector> RootFinder<V> {
                 t_mid = t1 - fracsub * (t1 - t0);
             }
 
-            interpolate_inplace(t_mid, ymid).unwrap();
-            root_fn.call_inplace(ymid, t_mid, gmid);
+            interpolate_inplace(t_mid, ymid)?;
+            root_fn.call_inplace(ymid, t_mid, gmid)?;
 
             let (rootfnd, _gfracmax, imax_i32) = g0.root_finding(gmid);
             let lower = imax_i32 >= 0;
@@ -137,10 +143,10 @@ impl<V: Vector> RootFinder<V> {
                 std::mem::swap(g1, gmid);
             } else if rootfnd {
                 // we are returning so make sure g0 is set for next iteration
-                root_fn.call_inplace(y, t, g0);
+                root_fn.call_inplace(y, t, g0)?;
 
                 // No sign change in (tlo,tmid), but g = 0 at tmid; return root tmid.
-                return Some((t_mid, imax));
+                return Ok(Some((t_mid, imax)));
             } else {
                 // No sign change in (tlo,tmid), and no zero at tmid. Sign change must be in (tmid,thi).  Replace tlo with tmid.
                 t0 = t_mid;
@@ -160,8 +166,8 @@ impl<V: Vector> RootFinder<V> {
             i += 1;
         }
         // we are returning so make sure g0 is set for next iteration
-        root_fn.call_inplace(y, t, g0);
-        Some((t1, imax))
+        root_fn.call_inplace(y, t, g0)?;
+        Ok(Some((t1, imax)))
     }
 }
 
@@ -195,24 +201,32 @@ mod tests {
 
         // check no root
         let root_finder = RootFinder::new(1, 1, ctx);
-        root_finder.init(&root_fn, &Vector::from_vec(vec![0.0], ctx), 0.0);
-        let root = root_finder.check_root(
-            &interpolate_inplace,
-            &root_fn,
-            &Vector::from_vec(vec![0.3], ctx),
-            0.3,
-        );
+        root_finder
+            .init(&root_fn, &Vector::from_vec(vec![0.0], ctx), 0.0)
+            .unwrap();
+        let root = root_finder
+            .check_root(
+                &interpolate_inplace,
+                &root_fn,
+                &Vector::from_vec(vec![0.3], ctx),
+                0.3,
+            )
+            .unwrap();
         assert_eq!(root, None);
 
         // check root
         let root_finder = RootFinder::new(1, 1, ctx);
-        root_finder.init(&root_fn, &Vector::from_vec(vec![0.0], ctx), 0.0);
-        let root = root_finder.check_root(
-            &interpolate_inplace,
-            &root_fn,
-            &Vector::from_vec(vec![1.3], ctx),
-            1.3,
-        );
+        root_finder
+            .init(&root_fn, &Vector::from_vec(vec![0.0], ctx), 0.0)
+            .unwrap();
+        let root = root_finder
+            .check_root(
+                &interpolate_inplace,
+                &root_fn,
+                &Vector::from_vec(vec![1.3], ctx),
+                1.3,
+            )
+            .unwrap();
         if let Some((root, _idx)) = root {
             assert!((root - 0.4).abs() < 1e-10);
         } else {

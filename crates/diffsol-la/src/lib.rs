@@ -69,7 +69,7 @@ pub mod scalar;
 /// - `CudaVec` for GPU computation (requires `cuda` feature)
 pub mod vector;
 
-pub use error::LaError;
+pub use error::{LaError, OperatorError, OperatorErrorKind, OperatorResult};
 
 pub use context::{faer::FaerContext, nalgebra::NalgebraContext, Context};
 

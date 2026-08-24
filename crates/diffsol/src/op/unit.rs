@@ -2,7 +2,7 @@
 
 use crate::{
     LinearOp, LinearOpSens, LinearOpTranspose, Matrix, NonLinearOp, NonLinearOpAdjoint,
-    NonLinearOpJacobian, NonLinearOpSens, NonLinearOpSensAdjoint, Op, Vector,
+    NonLinearOpJacobian, NonLinearOpSens, NonLinearOpSensAdjoint, Op, OperatorResult, Vector,
 };
 use num_traits::{One, Zero};
 
@@ -46,8 +46,13 @@ impl<M: Matrix> Op for UnitCallable<M> {
 }
 
 impl<M: Matrix> BuilderOp for UnitCallable<M> {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, _t0: Self::T, _p: &Self::V) {
-        // Do nothing
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        _t0: Self::T,
+        _p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        Ok(())
     }
     fn set_nout(&mut self, nout: usize) {
         self.n = nout;
@@ -61,20 +66,35 @@ impl<M: Matrix> BuilderOp for UnitCallable<M> {
 }
 
 impl<M: Matrix> LinearOp for ParameterisedOp<'_, UnitCallable<M>> {
-    fn gemv_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        _t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         y.axpy(Self::T::one(), x, beta);
+        Ok(())
     }
 }
 
 impl<M: Matrix> NonLinearOp for ParameterisedOp<'_, UnitCallable<M>> {
-    fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) -> OperatorResult {
         y.copy_from(x);
+        Ok(())
     }
 }
 
 impl<M: Matrix> NonLinearOpJacobian for ParameterisedOp<'_, UnitCallable<M>> {
-    fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        _t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         y.copy_from(v);
+        Ok(())
     }
 }
 
@@ -103,26 +123,48 @@ impl<M: Matrix> LinearOpSens for ParameterisedOp<'_, UnitCallable<M>> {
 }
 
 impl<M: Matrix> LinearOpTranspose for ParameterisedOp<'_, UnitCallable<M>> {
-    fn gemv_transpose_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_transpose_inplace(
+        &self,
+        x: &Self::V,
+        _t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         y.axpy(Self::T::one(), x, beta);
+        Ok(())
     }
 }
 
 impl<M: Matrix> LinearOp for UnitCallable<M> {
-    fn gemv_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        _t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         y.axpy(Self::T::one(), x, beta);
+        Ok(())
     }
 }
 
 impl<M: Matrix> NonLinearOp for UnitCallable<M> {
-    fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) -> OperatorResult {
         y.copy_from(x);
+        Ok(())
     }
 }
 
 impl<M: Matrix> NonLinearOpJacobian for UnitCallable<M> {
-    fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        _t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         y.copy_from(v);
+        Ok(())
     }
 }
 
@@ -151,8 +193,15 @@ impl<M: Matrix> LinearOpSens for UnitCallable<M> {
 }
 
 impl<M: Matrix> LinearOpTranspose for UnitCallable<M> {
-    fn gemv_transpose_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_transpose_inplace(
+        &self,
+        x: &Self::V,
+        _t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         y.axpy(Self::T::one(), x, beta);
+        Ok(())
     }
 }
 
@@ -174,19 +223,19 @@ mod tests {
         let v = ctx.vector_from_vec(vec![0.5, -1.5, 2.0]);
         let mut y: crate::NalgebraVec<f64> = ctx.vector_from_vec(vec![9.0, 8.0, 7.0]);
 
-        NonLinearOp::call_inplace(op, &x, 0.0, &mut y);
+        NonLinearOp::call_inplace(op, &x, 0.0, &mut y).unwrap();
         y.assert_eq_st(&x, 1e-12);
 
         y = ctx.vector_from_vec(vec![9.0, 8.0, 7.0]);
-        op.gemv_inplace(&x, 0.0, 2.0, &mut y);
+        op.gemv_inplace(&x, 0.0, 2.0, &mut y).unwrap();
         y.assert_eq_st(&ctx.vector_from_vec(vec![19.0, 14.0, 17.0]), 1e-12);
 
         y = ctx.vector_from_vec(vec![9.0, 8.0, 7.0]);
-        op.gemv_transpose_inplace(&x, 0.0, 2.0, &mut y);
+        op.gemv_transpose_inplace(&x, 0.0, 2.0, &mut y).unwrap();
         y.assert_eq_st(&ctx.vector_from_vec(vec![19.0, 14.0, 17.0]), 1e-12);
 
         y = ctx.vector_zeros(3);
-        op.jac_mul_inplace(&x, 0.0, &v, &mut y);
+        op.jac_mul_inplace(&x, 0.0, &v, &mut y).unwrap();
         y.assert_eq_st(&v, 1e-12);
 
         y = ctx.vector_zeros(3);
@@ -211,15 +260,15 @@ mod tests {
         let pop = ParameterisedOp::new(op, &p);
 
         y = ctx.vector_zeros(3);
-        NonLinearOp::call_inplace(&pop, &x, 0.0, &mut y);
+        NonLinearOp::call_inplace(&pop, &x, 0.0, &mut y).unwrap();
         y.assert_eq_st(&x, 1e-12);
 
         y = ctx.vector_from_vec(vec![1.0, 2.0, 3.0]);
-        pop.gemv_inplace(&x, 0.0, -1.0, &mut y);
+        pop.gemv_inplace(&x, 0.0, -1.0, &mut y).unwrap();
         y.assert_eq_st(&ctx.vector_from_vec(vec![0.0, -4.0, 0.0]), 1e-12);
 
         y = ctx.vector_zeros(3);
-        pop.jac_mul_inplace(&x, 0.0, &v, &mut y);
+        pop.jac_mul_inplace(&x, 0.0, &v, &mut y).unwrap();
         y.assert_eq_st(&v, 1e-12);
 
         y = ctx.vector_zeros(3);
@@ -245,7 +294,7 @@ mod tests {
         y.assert_eq_st(&ctx.vector_zeros(3), 1e-12);
 
         y = ctx.vector_from_vec(vec![1.0, 2.0, 3.0]);
-        pop.gemv_transpose_inplace(&x, 0.0, 1.0, &mut y);
+        pop.gemv_transpose_inplace(&x, 0.0, 1.0, &mut y).unwrap();
         y.assert_eq_st(&ctx.vector_from_vec(vec![2.0, 0.0, 6.0]), 1e-12);
     }
 
@@ -260,7 +309,8 @@ mod tests {
         op.set_nout(3);
         op.set_nstates(3);
         op.set_nparams(99);
-        op.calculate_sparsity(&ctx.vector_zeros(3), 0.0, &ctx.vector_zeros(0));
+        op.calculate_sparsity(&ctx.vector_zeros(3), 0.0, &ctx.vector_zeros(0))
+            .unwrap();
 
         assert_eq!(op.nstates(), 3);
         assert_eq!(op.nout(), 3);

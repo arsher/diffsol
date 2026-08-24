@@ -44,14 +44,17 @@ impl<T: FaerScalar> LinearSolver<FaerSparseMat<T>> for FaerSparseLU<T> {
             .matrix
             .as_mut()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
-        op.matrix_inplace(matrix);
+        op.matrix_inplace(matrix)?;
         let symbolic = self
             .lu_symbolic
             .as_ref()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         self.lu = Some(
             Lu::try_new_with_symbolic(symbolic.clone(), matrix.data.rb()).map_err(|error| {
-                linear_solver_error!(FaerSparseNumericFactorizationFailed, error.to_string())
+                linear_solver_error!(
+                    Other,
+                    format!("Faer sparse numeric factorization failed: {error}")
+                )
             })?,
         );
         Ok(())
@@ -78,7 +81,10 @@ impl<T: FaerScalar> LinearSolver<FaerSparseMat<T>> for FaerSparseLU<T> {
         let matrix = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), *op.context());
         self.lu_symbolic = Some(
             SymbolicLu::try_new(matrix.data.symbolic()).map_err(|error| {
-                linear_solver_error!(FaerSparseSymbolicAnalysisFailed, error.to_string())
+                linear_solver_error!(
+                    Other,
+                    format!("Faer sparse symbolic analysis failed: {error}")
+                )
             })?,
         );
         self.matrix = Some(matrix);
@@ -113,8 +119,9 @@ mod tests {
             self.matrix.context()
         }
 
-        fn matrix_inplace(&self, matrix: &mut Self::M) {
+        fn matrix_inplace(&self, matrix: &mut Self::M) -> crate::OperatorResult {
             matrix.copy_from(&self.matrix);
+            Ok(())
         }
 
         fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -168,11 +175,10 @@ mod tests {
 
         let error = s.set_linearisation(&op).unwrap_err();
 
-        assert!(matches!(
-            error,
-            LaError::LinearSolverError(
-                crate::error::LinearSolverError::FaerSparseNumericFactorizationFailed(_)
-            )
-        ));
+        let LaError::LinearSolverError(crate::error::LinearSolverError::Other(message)) = error
+        else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(message.contains("Faer sparse numeric factorization failed"));
     }
 }

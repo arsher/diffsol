@@ -2,7 +2,7 @@ use std::{cell::RefCell, marker::PhantomData};
 
 use crate::{
     Matrix, NonLinearOp, NonLinearOpAdjoint, NonLinearOpJacobian, NonLinearOpSens,
-    NonLinearOpSensAdjoint, Op, Scale, Vector,
+    NonLinearOpSensAdjoint, Op, OperatorResult, Scale, Vector,
 };
 use num_traits::{One, Zero};
 use std::ops::MulAssign;
@@ -65,7 +65,14 @@ impl<M: Matrix, F> Op for ClosureAutodiff<M, F> {
 }
 
 impl<M: Matrix, F> BuilderOp for ClosureAutodiff<M, F> {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, _t0: Self::T, _p: &Self::V) {}
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        _t0: Self::T,
+        _p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        Ok(())
+    }
     fn set_nstates(&mut self, nstates: usize) {
         self.nstates = nstates;
         self.tmp_nstates = RefCell::new(M::V::zeros(nstates, self.ctx.clone()));
@@ -98,23 +105,25 @@ mod autodiff_impl {
     impl<M: Matrix, F: Fn(&M::V, &M::V, M::T, &mut M::V)> NonLinearOp
         for ParameterisedOp<'_, ClosureAutodiff<M, F>>
     {
-        fn call_inplace(&self, x: &M::V, t: M::T, y: &mut M::V) {
+        fn call_inplace(&self, x: &M::V, t: M::T, y: &mut M::V) -> OperatorResult {
             self.op.statistics.borrow_mut().increment_call();
             self.op.call_func(x, self.p, t, y);
+            Ok(())
         }
     }
 
     impl<M: Matrix, F: Fn(&M::V, &M::V, M::T, &mut M::V)> NonLinearOpJacobian
         for ParameterisedOp<'_, ClosureAutodiff<M, F>>
     {
-        fn jac_mul_inplace(&self, x: &M::V, t: M::T, v: &M::V, y: &mut M::V) {
+        fn jac_mul_inplace(&self, x: &M::V, t: M::T, v: &M::V, y: &mut M::V) -> OperatorResult {
             self.op.statistics.borrow_mut().increment_jac_mul();
             let mut tmp_nstates = self.op.tmp_nstates.borrow_mut();
             self.op.call_jvp(x, v, self.p, t, &mut tmp_nstates, y);
+            Ok(())
         }
-        fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+        fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
             self.op.statistics.borrow_mut().increment_matrix();
-            self._default_jacobian_inplace(x, t, y);
+            self._default_jacobian_inplace(x, t, y)
         }
         fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
             None
@@ -205,12 +214,12 @@ mod tests {
         let x = V::from_vec(vec![2.0, 3.0], ctx);
 
         let mut value = V::zeros(2, ctx);
-        pop.call_inplace(&x, 0.5, &mut value);
+        pop.call_inplace(&x, 0.5, &mut value).unwrap();
         value.assert_eq_st(&V::from_vec(vec![22.5, 20.5], ctx), 1e-12);
 
         let direction = V::from_vec(vec![7.0, 11.0], ctx);
         let mut jvp = V::zeros(2, ctx);
-        pop.jac_mul_inplace(&x, 0.5, &direction, &mut jvp);
+        pop.jac_mul_inplace(&x, 0.5, &direction, &mut jvp).unwrap();
         jvp.assert_eq_st(&V::from_vec(vec![134.0, 76.0], ctx), 1e-12);
 
         let mut parameter_jvp = V::zeros(2, ctx);

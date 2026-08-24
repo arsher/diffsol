@@ -1,4 +1,4 @@
-use diffsol_la::error::LaError;
+use diffsol_la::error::{LaError, OperatorError};
 use diffsol_nl::error::NlError;
 use thiserror::Error;
 
@@ -23,6 +23,22 @@ pub enum DiffsolError {
     DiffslCompilerError(String),
     #[error("Error: {0}")]
     Other(String),
+}
+
+impl From<OperatorError> for DiffsolError {
+    fn from(error: OperatorError) -> Self {
+        Self::LaError(LaError::OperatorError(error))
+    }
+}
+
+impl DiffsolError {
+    /// Return the user-operator error retained by this error, if any.
+    pub fn operator_error(&self) -> Option<&OperatorError> {
+        match self {
+            Self::LaError(LaError::OperatorError(error)) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 impl From<NlError> for DiffsolError {

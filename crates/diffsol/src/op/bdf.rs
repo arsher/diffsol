@@ -1,6 +1,6 @@
 use crate::{
     matrix::DenseMatrix, scale, LinearOp, Matrix, MatrixSparsity, NonLinearOp, NonLinearOpJacobian,
-    OdeEquationsImplicit, Op, Vector,
+    OdeEquationsImplicit, Op, OperatorResult, Vector,
 };
 use log::debug;
 use num_traits::{One, ToPrimitive, Zero};
@@ -87,19 +87,19 @@ impl<Eqn: OdeEquationsImplicit> BdfCallable<Eqn> {
         let mass_jac = self.mass_jac.borrow();
         Some((rhs_jac.clone(), mass_jac.clone()))
     }
-    pub fn rhs_jac(&self, x: &Eqn::V, t: Eqn::T) -> Ref<'_, Eqn::M> {
+    pub fn rhs_jac(&self, x: &Eqn::V, t: Eqn::T) -> OperatorResult<Ref<'_, Eqn::M>> {
         {
             let mut rhs_jac = self.rhs_jac.borrow_mut();
-            self.eqn.rhs().jacobian_inplace(x, t, &mut rhs_jac);
+            self.eqn.rhs().jacobian_inplace(x, t, &mut rhs_jac)?;
         }
-        self.rhs_jac.borrow()
+        Ok(self.rhs_jac.borrow())
     }
-    pub fn mass(&self, t: Eqn::T) -> Ref<'_, Eqn::M> {
+    pub fn mass(&self, t: Eqn::T) -> OperatorResult<Ref<'_, Eqn::M>> {
         {
             let mut mass_jac = self.mass_jac.borrow_mut();
-            self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac);
+            self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac)?;
         }
-        self.mass_jac.borrow()
+        Ok(self.mass_jac.borrow())
     }
     pub fn new(eqn: Eqn) -> Self {
         let n = eqn.rhs().nstates();
@@ -237,11 +237,11 @@ impl<Eqn: OdeEquationsImplicit> Op for BdfCallable<Eqn> {
 // callable to solve for F(y) = M (y' + psi) - f(y) = 0
 impl<Eqn: OdeEquationsImplicit> NonLinearOp for BdfCallable<Eqn> {
     // F(y) = M (y - y0 + psi) - c * f(y) = 0
-    fn call_inplace(&self, x: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) {
+    fn call_inplace(&self, x: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) -> OperatorResult {
         let psi_neg_y0_ref = self.psi_neg_y0.borrow();
         let psi_neg_y0 = psi_neg_y0_ref.deref();
 
-        self.eqn.rhs().call_inplace(x, t, y);
+        self.eqn.rhs().call_inplace(x, t, y)?;
 
         let mut tmp = self.tmp.borrow_mut();
         tmp.copy_from(x);
@@ -249,32 +249,34 @@ impl<Eqn: OdeEquationsImplicit> NonLinearOp for BdfCallable<Eqn> {
         let c = *self.c.borrow().deref();
         // y = M tmp - c * y
         if let Some(mass) = self.eqn.mass() {
-            mass.gemv_inplace(&tmp, t, -c, y);
+            mass.gemv_inplace(&tmp, t, -c, y)?;
         } else {
             y.axpy(Eqn::T::one(), &tmp, -c);
         }
+        Ok(())
     }
 }
 
 impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for BdfCallable<Eqn> {
     // (M - c * f'(y)) v
-    fn jac_mul_inplace(&self, x: &Eqn::V, t: Eqn::T, v: &Eqn::V, y: &mut Eqn::V) {
-        self.eqn.rhs().jac_mul_inplace(x, t, v, y);
+    fn jac_mul_inplace(&self, x: &Eqn::V, t: Eqn::T, v: &Eqn::V, y: &mut Eqn::V) -> OperatorResult {
+        self.eqn.rhs().jac_mul_inplace(x, t, v, y)?;
         let c = *self.c.borrow().deref();
         // y = Mv - c y
         if let Some(mass) = self.eqn.mass() {
-            mass.gemv_inplace(v, t, -c, y);
+            mass.gemv_inplace(v, t, -c, y)?;
         } else {
             y.axpy(Eqn::T::one(), v, -c);
         }
+        Ok(())
     }
 
     // M - c * f'(y)
-    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
         if *self.jacobian_is_stale.borrow() {
             // calculate the mass and rhs jacobians
             let mut rhs_jac = self.rhs_jac.borrow_mut();
-            self.eqn.rhs().jacobian_inplace(x, t, &mut rhs_jac);
+            self.eqn.rhs().jacobian_inplace(x, t, &mut rhs_jac)?;
             let c = *self.c.borrow().deref();
             debug!("Recomputing RHS Jacobian, c = {}", c.to_f64().unwrap());
             if self.eqn.mass().is_none() {
@@ -282,7 +284,7 @@ impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for BdfCallable<Eqn> {
                 y.scale_add_and_assign(mass_jac.deref(), -c, rhs_jac.deref());
             } else {
                 let mut mass_jac = self.mass_jac.borrow_mut();
-                self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac);
+                self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac)?;
                 y.scale_add_and_assign(mass_jac.deref(), -c, rhs_jac.deref());
             }
             self.jacobian_is_stale.replace(false);
@@ -297,6 +299,7 @@ impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for BdfCallable<Eqn> {
             );
             y.scale_add_and_assign(mass_jac.deref(), -c, rhs_jac.deref());
         }
+        Ok(())
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.sparsity.clone()
@@ -337,7 +340,7 @@ mod tests {
         //        |-0.1|
         //  i.e. F(y) = |1 0| |2.1| - 0.1 * |-0.1| =  |2.11|
         //              |0 1| |2.2|         |-0.1|    |2.21|
-        bdf_callable.call_inplace(&y, t, &mut y_out);
+        bdf_callable.call_inplace(&y, t, &mut y_out).unwrap();
         let y_out_expect = Vcpu::from_vec(vec![2.11, 2.21], *ctx);
         y_out.assert_eq_st(&y_out_expect, 1e-10);
 
@@ -346,13 +349,13 @@ mod tests {
         //          |-0.1|
         // Mv - c * f'(y) v = |1 0| |1| - 0.1 * |-0.1| = |1.01|
         //                    |0 1| |1|         |-0.1|   |1.01|
-        bdf_callable.jac_mul_inplace(&y, t, &v, &mut y_out);
+        bdf_callable.jac_mul_inplace(&y, t, &v, &mut y_out).unwrap();
         let y_out_expect = Vcpu::from_vec(vec![1.01, 1.01], *ctx);
         y_out.assert_eq_st(&y_out_expect, 1e-10);
 
         // J = M - c * f'(y) = |1 0| - 0.1 * |-0.1 0| = |1.01 0|
         //                     |0 1|         |0 -0.1|   |0 1.01|
-        let jac = bdf_callable.jacobian(&y, t);
+        let jac = bdf_callable.jacobian(&y, t).unwrap();
         assert_eq!(jac.get_index(0, 0), 1.01);
         assert_eq!(jac.get_index(0, 1), 0.0);
         assert_eq!(jac.get_index(1, 0), 0.0);

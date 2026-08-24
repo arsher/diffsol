@@ -4,9 +4,10 @@ use crate::{
     ode_solver_error,
     op::{linear_closure_with_adjoint::LinearClosureWithAdjoint, BuilderOp},
     Closure, ClosureNoJac, ClosureWithAdjoint, ClosureWithSens, ConstantClosure,
-    ConstantClosureWithAdjoint, ConstantClosureWithSens, ConstantOp, InitialConditionSolverOptions,
-    LinearClosure, LinearOp, Matrix, NonLinearOp, OdeEquations, OdeSolverOptions, OdeSolverProblem,
-    Op, ParameterisedOp, Scalar, UnitCallable, Vector,
+    ConstantClosureWithAdjoint, ConstantClosureWithSens, ConstantOp, FallibleClosure,
+    FallibleLinearClosure, InitialConditionSolverOptions, LinearClosure, LinearOp, Matrix,
+    NonLinearOp, OdeEquations, OdeSolverOptions, OdeSolverProblem, Op, ParameterisedOp, Scalar,
+    UnitCallable, Vector,
 };
 
 #[cfg(feature = "autodiff")]
@@ -213,6 +214,54 @@ where
             root: self.root,
             out: self.out,
 
+            reset: self.reset,
+            t0: self.t0,
+            h0: self.h0,
+            rtol: self.rtol,
+            atol: self.atol,
+            sens_atol: self.sens_atol,
+            param_scales: self.param_scales,
+            sens_rtol: self.sens_rtol,
+            out_rtol: self.out_rtol,
+            out_atol: self.out_atol,
+            param_rtol: self.param_rtol,
+            param_atol: self.param_atol,
+            p: self.p,
+            use_coloring: self.use_coloring,
+            integrate_out: self.integrate_out,
+            ctx: self.ctx,
+            ic_options: self.ic_options,
+            ode_options: self.ode_options,
+        }
+    }
+
+    /// Set a fallible right-hand side and Jacobian-vector product for an implicit ODE.
+    ///
+    /// Both callbacks return [`crate::OperatorResult`]. Recoverable errors may be
+    /// retried at solver-defined trial points, while fatal errors terminate the solve.
+    pub fn rhs_implicit_fallible<F, G>(
+        self,
+        rhs: F,
+        rhs_jac: G,
+    ) -> OdeBuilder<M, FallibleClosure<M, F, G>, Init, Mass, Root, Out, Reset>
+    where
+        F: Fn(&M::V, &M::V, M::T, &mut M::V) -> crate::OperatorResult,
+        G: Fn(&M::V, &M::V, M::T, &M::V, &mut M::V) -> crate::OperatorResult,
+    {
+        let nstates = 0;
+        OdeBuilder::<M, FallibleClosure<M, F, G>, Init, Mass, Root, Out, Reset> {
+            rhs: Some(FallibleClosure::new(
+                rhs,
+                rhs_jac,
+                nstates,
+                nstates,
+                nstates,
+                self.ctx.clone(),
+            )),
+            init: self.init,
+            mass: self.mass,
+            root: self.root,
+            out: self.out,
             reset: self.reset,
             t0: self.t0,
             h0: self.h0,
@@ -623,6 +672,51 @@ where
             root: self.root,
             out: self.out,
 
+            reset: self.reset,
+            t0: self.t0,
+            h0: self.h0,
+            rtol: self.rtol,
+            atol: self.atol,
+            sens_atol: self.sens_atol,
+            param_scales: self.param_scales,
+            sens_rtol: self.sens_rtol,
+            out_rtol: self.out_rtol,
+            out_atol: self.out_atol,
+            param_rtol: self.param_rtol,
+            param_atol: self.param_atol,
+            p: self.p,
+            use_coloring: self.use_coloring,
+            integrate_out: self.integrate_out,
+            ctx: self.ctx,
+            ic_options: self.ic_options,
+            ode_options: self.ode_options,
+        }
+    }
+
+    /// Set a fallible mass-matrix-vector product callback.
+    ///
+    /// The callback computes `y = M(t, p) * v + beta * y` and returns
+    /// [`crate::OperatorResult`].
+    pub fn mass_fallible<F>(
+        self,
+        mass: F,
+    ) -> OdeBuilder<M, Rhs, Init, FallibleLinearClosure<M, F>, Root, Out, Reset>
+    where
+        F: Fn(&M::V, &M::V, M::T, M::T, &mut M::V) -> crate::OperatorResult,
+    {
+        let nstates = 0;
+        OdeBuilder::<M, Rhs, Init, FallibleLinearClosure<M, F>, Root, Out, Reset> {
+            rhs: self.rhs,
+            init: self.init,
+            mass: Some(FallibleLinearClosure::new(
+                mass,
+                nstates,
+                nstates,
+                nstates,
+                self.ctx.clone(),
+            )),
+            root: self.root,
+            out: self.out,
             reset: self.reset,
             t0: self.t0,
             h0: self.h0,
@@ -1850,9 +1944,9 @@ where
         }
 
         if self.use_coloring || M::is_sparse() {
-            rhs.calculate_sparsity(&y0, self.t0, &p);
+            rhs.calculate_sparsity(&y0, self.t0, &p)?;
             if let Some(ref mut mass) = mass {
-                mass.calculate_sparsity(&y0, self.t0, &p);
+                mass.calculate_sparsity(&y0, self.t0, &p)?;
             }
         }
         let nout = out.as_ref().map(|out| out.nout());

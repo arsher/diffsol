@@ -43,6 +43,7 @@ pub mod nonlinear_op;
 pub mod nonlinear_solver;
 
 pub use convergence::{Convergence, ConvergenceStatus};
+pub use diffsol_la::{OperatorError, OperatorErrorKind, OperatorResult};
 pub use error::{NlError, NonLinearSolverError};
 pub use line_search::{BacktrackingLineSearch, LineSearch, NoLineSearch};
 pub use newton::{newton_iteration, NewtonNonlinearSolver};

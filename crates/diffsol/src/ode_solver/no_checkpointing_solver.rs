@@ -100,11 +100,11 @@ where
         panic!("checkpoint replay solver config is unavailable")
     }
 
-    fn jacobian(&self) -> Option<Ref<'_, Eqn::M>> {
+    fn jacobian(&self) -> Result<Option<Ref<'_, Eqn::M>>, DiffsolError> {
         panic!("checkpoint replay solver is unavailable")
     }
 
-    fn mass(&self) -> Option<Ref<'_, Eqn::M>> {
+    fn mass(&self) -> Result<Option<Ref<'_, Eqn::M>>, DiffsolError> {
         panic!("checkpoint replay solver is unavailable")
     }
 

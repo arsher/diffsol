@@ -804,6 +804,7 @@ impl<V: Vector> StateRefMut<'_, V> {
         Eqn: OdeEquations<T = V::T, V = V, C = V::C>,
     {
         let is_neg_h = h0 < Eqn::T::zero();
+        let requested_h0 = h0.abs();
         let (h0, h1) = {
             let y0 = &*self.y;
             let t0 = *self.t;
@@ -812,11 +813,16 @@ impl<V: Vector> StateRefMut<'_, V> {
             let d0 = y0.squared_norm(y0, atol, rtol).sqrt();
             let d1 = f0.squared_norm(y0, atol, rtol).sqrt();
 
-            let h0 = if d0 < Eqn::T::from_f64(1e-5).unwrap() || d1 < Eqn::T::from_f64(1e-5).unwrap()
-            {
-                Eqn::T::from_f64(1e-6).unwrap()
+            let estimated_h0 =
+                if d0 < Eqn::T::from_f64(1e-5).unwrap() || d1 < Eqn::T::from_f64(1e-5).unwrap() {
+                    Eqn::T::from_f64(1e-6).unwrap()
+                } else {
+                    Eqn::T::from_f64(0.01).unwrap() * (d0 / d1)
+                };
+            let h0 = if requested_h0 > Eqn::T::zero() && requested_h0 < estimated_h0 {
+                requested_h0
             } else {
-                Eqn::T::from_f64(0.01).unwrap() * (d0 / d1)
+                estimated_h0
             };
 
             // make sure we preserve the sign of h0
@@ -854,6 +860,9 @@ impl<V: Vector> StateRefMut<'_, V> {
         *self.h = Eqn::T::from_f64(100.0).unwrap() * h0;
         if *self.h > h1 {
             *self.h = h1;
+        }
+        if requested_h0 > Eqn::T::zero() && *self.h > requested_h0 {
+            *self.h = requested_h0;
         }
 
         if is_neg_h {
@@ -1528,6 +1537,33 @@ mod test {
             .unwrap();
 
         assert!((state.as_ref().h - 1e-6).abs() < 1e-12);
+    }
+
+    #[test]
+    fn configured_initial_step_caps_the_estimator_probe_and_first_step() {
+        type M = crate::NalgebraMat<f64>;
+        type V = crate::NalgebraVec<f64>;
+
+        let furthest_time = Rc::new(Cell::new(0.0_f64));
+        let callback_time = Rc::clone(&furthest_time);
+        let problem = OdeBuilder::<M>::new()
+            .h0(1.0e-4)
+            .rhs(move |_x, _p, time, y| {
+                callback_time.set(callback_time.get().max(time));
+                y[0] = -1.0e-9;
+            })
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut state = BdfState::<V>::new_without_initialise(&problem).unwrap();
+
+        state
+            .as_mut()
+            .set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1)
+            .unwrap();
+
+        assert!(furthest_time.get() <= 1.0e-4);
+        assert!(state.as_ref().h.abs() <= 1.0e-4);
     }
 
     type TestMat = NalgebraMat<f64>;

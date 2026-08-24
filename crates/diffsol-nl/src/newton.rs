@@ -88,6 +88,7 @@ impl<C: NonLinearOpJacobian> LaLinearOp for JacobianRef<'_, C> {
 pub struct NewtonNonlinearSolver<M: Matrix, Ls: LinearSolver<M>, Lsearch: LineSearch<M::V>> {
     linear_solver: Ls,
     line_search: Lsearch,
+    is_problem_set: bool,
     is_jacobian_set: bool,
     tmp: M::V,
 }
@@ -99,6 +100,7 @@ impl<M: Matrix, Ls: LinearSolver<M>, Lsearch: LineSearch<M::V>>
         Self {
             linear_solver,
             line_search,
+            is_problem_set: false,
             is_jacobian_set: false,
             tmp: M::V::zeros(0, Default::default()),
         }
@@ -127,21 +129,33 @@ impl<M: Matrix, Ls: LinearSolver<M>, Lsearch: LineSearch<M::V>> NonLinearSolver<
         self.is_jacobian_set
     }
 
-    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(&mut self, op: &C) {
-        self.linear_solver
-            .set_sparsity(&JacobianRef::sparsity_only(op));
+    fn is_problem_set(&self) -> bool {
+        self.is_problem_set
+    }
+
+    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), NlError> {
+        self.is_problem_set = false;
         self.is_jacobian_set = false;
+        self.linear_solver
+            .set_sparsity(&JacobianRef::sparsity_only(op))?;
+        self.is_problem_set = true;
         self.tmp = C::V::zeros(op.nstates(), op.context().clone());
+        Ok(())
     }
 
     fn reset_jacobian<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
         &mut self,
         op: &C,
         x: &C::V,
-    ) {
+    ) -> Result<(), NlError> {
+        self.is_jacobian_set = false;
         self.linear_solver
-            .set_linearisation(&JacobianRef::at(op, x));
+            .set_linearisation(&JacobianRef::at(op, x))?;
         self.is_jacobian_set = true;
+        Ok(())
     }
 
     fn solve_linearised_in_place(&self, x: &mut M::V) -> Result<(), NlError> {

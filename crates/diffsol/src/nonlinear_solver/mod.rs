@@ -82,21 +82,30 @@ impl<C: TimeAwareNonLinearOpJacobian> diffsol_nl::NonLinearOpJacobian for NonLin
 
 /// A solver for the (time-aware) nonlinear problem `F(x, t) = 0` for fixed `t`.
 pub trait NonLinearSolver<M: Matrix>: Default {
-    /// Set the problem to be solved, any previous problem is discarded.
+    /// Set the problem to be solved, discarding any previous problem.
+    ///
+    /// Returns an error if the underlying linear solver cannot analyze the
+    /// problem's Jacobian structure.
     fn set_problem<C: TimeAwareNonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
         &mut self,
         op: &C,
-    );
+    ) -> Result<(), DiffsolError>;
 
     fn is_jacobian_set(&self) -> bool;
 
+    /// Return `true` if [Self::set_problem] has completed successfully.
+    fn is_problem_set(&self) -> bool;
+
     /// Reset the approximation of the Jacobian matrix.
+    ///
+    /// Returns an error if the underlying linear solver cannot factorize the
+    /// Jacobian.
     fn reset_jacobian<C: TimeAwareNonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
         &mut self,
         op: &C,
         x: &M::V,
         t: M::T,
-    );
+    ) -> Result<(), DiffsolError>;
 
     /// Clear the approximation of the Jacobian matrix.
     fn clear_jacobian(&mut self);
@@ -136,12 +145,17 @@ impl<M: Matrix, S: NlNonLinearSolver<M>> NonLinearSolver<M> for S {
     fn set_problem<C: TimeAwareNonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
         &mut self,
         op: &C,
-    ) {
-        NlNonLinearSolver::set_problem(self, &NonLinearisedRef::sparsity_only(op));
+    ) -> Result<(), DiffsolError> {
+        NlNonLinearSolver::set_problem(self, &NonLinearisedRef::sparsity_only(op))
+            .map_err(Into::into)
     }
 
     fn is_jacobian_set(&self) -> bool {
         NlNonLinearSolver::is_jacobian_set(self)
+    }
+
+    fn is_problem_set(&self) -> bool {
+        NlNonLinearSolver::is_problem_set(self)
     }
 
     fn reset_jacobian<C: TimeAwareNonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
@@ -149,8 +163,8 @@ impl<M: Matrix, S: NlNonLinearSolver<M>> NonLinearSolver<M> for S {
         op: &C,
         x: &M::V,
         t: M::T,
-    ) {
-        NlNonLinearSolver::reset_jacobian(self, &NonLinearisedRef::at(op, t), x);
+    ) -> Result<(), DiffsolError> {
+        NlNonLinearSolver::reset_jacobian(self, &NonLinearisedRef::at(op, t), x).map_err(Into::into)
     }
 
     fn clear_jacobian(&mut self) {
@@ -261,10 +275,10 @@ pub mod tests {
     ) where
         C: TimeAwareNonLinearOpJacobian,
     {
-        solver.set_problem(&op);
+        solver.set_problem(&op).unwrap();
         let mut convergence = Convergence::new(rtol, atol);
         let t = C::T::zero();
-        solver.reset_jacobian(&op, &solns[0].x0, t);
+        solver.reset_jacobian(&op, &solns[0].x0, t).unwrap();
         for soln in solns {
             let x = solver
                 .solve(&op, &soln.x0, t, &soln.x0, &mut convergence)

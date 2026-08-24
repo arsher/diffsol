@@ -127,7 +127,7 @@ impl<V: Vector> StateRefMut<'_, V> {
 
         let rtol = ode_problem.rtol;
         let atol = &ode_problem.atol;
-        root_solver.set_problem(&f);
+        root_solver.set_problem(&f)?;
         let mut y_tmp = self.dy.clone();
         y_tmp.copy_from_indices(self.y, &f.algebraic_indices);
         let mut yerr = y_tmp.clone();
@@ -140,7 +140,7 @@ impl<V: Vector> StateRefMut<'_, V> {
         let mut result = Ok(());
         debug!("Setting consistent initial conditions at t = {}", self.t);
         for _ in 0..ode_problem.ic_options.max_linear_solver_setups {
-            root_solver.reset_jacobian(&f, &y_tmp, *self.t);
+            root_solver.reset_jacobian(&f, &y_tmp, *self.t)?;
             result = root_solver.solve_in_place(&f, &mut y_tmp, *self.t, &yerr, &mut convergence);
             match &result {
                 Ok(()) => break,
@@ -212,14 +212,14 @@ impl<V: Vector> StateRefMut<'_, V> {
                 &self.s[i],
                 algebraic_indices.clone(),
             );
-            root_solver.set_problem(&f);
+            root_solver.set_problem(&f)?;
 
             let mut y = self.ds[i].clone();
             y.copy_from_indices(&self.s[i], &f.algebraic_indices);
             let mut yerr = y.clone();
             let mut result = Ok(());
             for _ in 0..ode_problem.ic_options.max_linear_solver_setups {
-                root_solver.reset_jacobian(&f, &y, *self.t);
+                root_solver.reset_jacobian(&f, &y, *self.t)?;
                 result = root_solver.solve_in_place(&f, &mut y, *self.t, &yerr, &mut convergence);
                 match &result {
                     Ok(()) => break,

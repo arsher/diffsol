@@ -19,17 +19,29 @@ impl<V> NonLinearSolveSolution<V> {
 
 /// A solver for the nonlinear problem `F(x) = 0`.
 pub trait NonLinearSolver<M: Matrix>: Default {
-    /// Set the problem to be solved, any previous problem is discarded.
-    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(&mut self, op: &C);
+    /// Set the problem to be solved, discarding any previous problem.
+    ///
+    /// Returns an error if the underlying linear solver cannot analyze the
+    /// problem's Jacobian structure.
+    fn set_problem<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), NlError>;
 
     fn is_jacobian_set(&self) -> bool;
 
+    /// Return `true` if [Self::set_problem] has completed successfully.
+    fn is_problem_set(&self) -> bool;
+
     /// Reset the approximation of the Jacobian matrix.
+    ///
+    /// Returns an error if the underlying linear solver cannot factorize the
+    /// Jacobian.
     fn reset_jacobian<C: NonLinearOpJacobian<V = M::V, T = M::T, M = M, C = M::C>>(
         &mut self,
         op: &C,
         x: &M::V,
-    );
+    ) -> Result<(), NlError>;
 
     /// Clear the approximation of the Jacobian matrix.
     fn clear_jacobian(&mut self);
@@ -137,9 +149,9 @@ pub mod tests {
         let expected = <M as MatrixCommon>::V::from_vec(vec![2.0, 2.0], ctx);
 
         let mut s = NewtonNonlinearSolver::new(NalgebraLU::default(), NoLineSearch);
-        s.set_problem(&op);
+        s.set_problem(&op).unwrap();
         let mut convergence = Convergence::new(rtol, &atol);
-        s.reset_jacobian(&op, &x0);
+        s.reset_jacobian(&op, &x0).unwrap();
         let x = s.solve(&op, &x0, &x0, &mut convergence).unwrap();
         let tol = x.clone() * scale(rtol) + &atol;
         x.assert_eq(&expected, &tol);

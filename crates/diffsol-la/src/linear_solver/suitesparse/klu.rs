@@ -181,18 +181,29 @@ where
     M: MatrixKLU,
     M::V: VectorKLU,
 {
-    fn set_linearisation<C: LinearOp<T = M::T, V = M::V, M = M, C = M::C>>(&mut self, op: &C) {
-        let matrix = self.matrix.as_mut().expect("Matrix not set");
+    fn set_linearisation<C: LinearOp<T = M::T, V = M::V, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), LaError> {
+        self.klu_numeric.clear();
+        let matrix = self
+            .matrix
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         op.matrix_inplace(matrix);
-        let symbolic = self.klu_symbolic.as_mut().expect("Symbolic not set");
         let col_ptrs = matrix.column_pointers() as *mut KluIndextype;
         let row_indices = matrix.row_indices() as *mut KluIndextype;
+        let symbolic = self
+            .klu_symbolic
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         self.klu_numeric = (0..matrix.nbatches())
             .map(|batch| {
                 KluNumeric::try_from_raw(symbolic, col_ptrs, row_indices, matrix.values_ptr(batch))
-                    .expect("Failed to factorise matrix")
+                    .map_err(|_| linear_solver_error!(KluFailedToFactorize))
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(())
     }
 
     fn solve_in_place(&self, x: &mut M::V) -> Result<(), LaError> {
@@ -220,13 +231,23 @@ where
         Ok(())
     }
 
-    fn set_sparsity<C: LinearOp<T = M::T, V = M::V, M = M, C = M::C>>(&mut self, op: &C) {
+    fn set_sparsity<C: LinearOp<T = M::T, V = M::V, M = M, C = M::C>>(
+        &mut self,
+        op: &C,
+    ) -> Result<(), LaError> {
+        self.klu_numeric.clear();
+        self.klu_symbolic = None;
+        self.matrix = None;
         let ncols = op.ncols();
         let nrows = op.nrows();
         let matrix = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), op.context().clone());
         let mut klu_common = self.klu_common.borrow_mut();
-        self.klu_symbolic = KluSymbolic::try_from_matrix(&matrix, klu_common.as_mut()).ok();
+        self.klu_symbolic = Some(
+            KluSymbolic::try_from_matrix(&matrix, klu_common.as_mut())
+                .map_err(|_| linear_solver_error!(KluFailedToAnalyze))?,
+        );
         self.matrix = Some(matrix);
+        Ok(())
     }
 }
 
@@ -239,8 +260,8 @@ mod tests {
     fn test_klu_identity() {
         let mut s = KLU::<FaerSparseMat<f64>>::default();
         let op = crate::linear_solver::tests::diagonal_op::<FaerSparseMat<f64>>(2.0);
-        s.set_sparsity(&op);
-        s.set_linearisation(&op);
+        s.set_sparsity(&op).unwrap();
+        s.set_linearisation(&op).unwrap();
         let b = FaerVec::from_vec(vec![2.0, 4.0], Default::default());
         let x = s.solve(&b).unwrap();
         x.assert_eq_st(

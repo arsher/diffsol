@@ -173,10 +173,9 @@ where
 {
     fn clone(&self) -> Self {
         let problem = self.ode_problem;
-        let mut nonlinear_solver = NewtonNonlinearSolver::new(LS::default(), NoLineSearch);
+        let nonlinear_solver = NewtonNonlinearSolver::new(LS::default(), NoLineSearch);
         let op = if let Some(op) = self.op.as_ref() {
             let op = op.clone_state(&self.ode_problem.eqn);
-            nonlinear_solver.set_problem(&op);
             Some(op)
         } else {
             None
@@ -300,8 +299,8 @@ where
             // setup linear solver for first step
             let bdf_callable = BdfCallable::new(&problem.eqn);
             bdf_callable.set_c(state.h, alpha[state.order]);
-            nonlinear_solver.set_problem(&bdf_callable);
-            nonlinear_solver.reset_jacobian(&bdf_callable, &state.y, state.t);
+            nonlinear_solver.set_problem(&bdf_callable)?;
+            nonlinear_solver.reset_jacobian(&bdf_callable, &state.y, state.t)?;
             Some(bdf_callable)
         } else {
             None
@@ -416,9 +415,9 @@ where
         } else {
             let bdf_callable = BdfCallable::new(augmented_eqn);
             bdf_callable.set_c(ret.state.h, ret.alpha[ret.state.order]);
-            ret.nonlinear_solver.set_problem(&bdf_callable);
+            ret.nonlinear_solver.set_problem(&bdf_callable)?;
             ret.nonlinear_solver
-                .reset_jacobian(&bdf_callable, &ret.state.s[0], ret.state.t);
+                .reset_jacobian(&bdf_callable, &ret.state.s[0], ret.state.t)?;
             ret.statistics
                 .record_linear_solver_setup(SolverState::Checkpoint);
             Some(bdf_callable)
@@ -464,17 +463,17 @@ where
         r
     }
 
-    fn _jacobian_updates(&mut self, c: Eqn::T, state: SolverState) {
+    fn _jacobian_updates(&mut self, c: Eqn::T, state: SolverState) -> Result<(), DiffsolError> {
         let did_update = if self.jacobian_update.check_rhs_jacobian_update(c, &state) {
             let did_reset = if let Some(op) = self.op.as_mut() {
                 op.set_jacobian_is_stale();
                 self.nonlinear_solver
-                    .reset_jacobian(op, &self.state.y, self.state.t);
+                    .reset_jacobian(op, &self.state.y, self.state.t)?;
                 true
             } else if let Some(s_op) = self.s_op.as_mut() {
                 s_op.set_jacobian_is_stale();
                 self.nonlinear_solver
-                    .reset_jacobian(s_op, &self.state.s[0], self.state.t);
+                    .reset_jacobian(s_op, &self.state.s[0], self.state.t)?;
                 true
             } else {
                 false
@@ -486,11 +485,11 @@ where
         } else if self.jacobian_update.check_jacobian_update(c, &state) {
             let did_reset = if let Some(op) = self.op.as_mut() {
                 self.nonlinear_solver
-                    .reset_jacobian(op, &self.state.y, self.state.t);
+                    .reset_jacobian(op, &self.state.y, self.state.t)?;
                 true
             } else if let Some(s_op) = self.s_op.as_mut() {
                 self.nonlinear_solver
-                    .reset_jacobian(s_op, &self.state.s[0], self.state.t);
+                    .reset_jacobian(s_op, &self.state.s[0], self.state.t)?;
                 true
             } else {
                 false
@@ -505,6 +504,17 @@ where
         if did_update {
             self.statistics.record_linear_solver_setup(state);
         }
+        Ok(())
+    }
+
+    fn invalidate_jacobian(&mut self) {
+        if let Some(op) = self.op.as_mut() {
+            op.set_jacobian_is_stale();
+        }
+        if let Some(op) = self.s_op.as_mut() {
+            op.set_jacobian_is_stale();
+        }
+        self.nonlinear_solver.clear_jacobian();
     }
 
     fn _update_step_size(&mut self, factor: Eqn::T) -> Result<Eqn::T, DiffsolError> {
@@ -1076,10 +1086,7 @@ where
         }
 
         // reinitialise jacobian updates as if a checkpoint was taken
-        self._jacobian_updates(
-            self.state.h * self.alpha[self.state.order],
-            SolverState::Checkpoint,
-        );
+        self.invalidate_jacobian();
     }
 
     fn interpolate_inplace(&self, t: Eqn::T, y: &mut Eqn::V) -> Result<(), DiffsolError> {
@@ -1268,10 +1275,7 @@ where
 
     fn checkpoint(&mut self) -> Self::State {
         debug!("Taking checkpoint");
-        self._jacobian_updates(
-            self.state.h * self.alpha[self.state.order],
-            SolverState::Checkpoint,
-        );
+        self.invalidate_jacobian();
         self.state.clone()
     }
 
@@ -1310,7 +1314,7 @@ where
             if let Some(s_op) = self.s_op.as_mut() {
                 s_op.set_c(self.state.h, self.alpha[self.state.order]);
             }
-            self._jacobian_updates(c, SolverState::StepSuccess);
+            self._jacobian_updates(c, SolverState::StepSuccess)?;
             self.prev_error_norm = None;
 
             // reinitialise tstop if needed
@@ -1321,6 +1325,20 @@ where
                 "State was modified, reinitialised to first order with h = {}",
                 self.state.h
             );
+        }
+
+        if !self.nonlinear_solver.is_jacobian_set() {
+            if !self.nonlinear_solver.is_problem_set() {
+                if let Some(op) = self.op.as_ref() {
+                    self.nonlinear_solver.set_problem(op)?;
+                } else if let Some(op) = self.s_op.as_ref() {
+                    self.nonlinear_solver.set_problem(op)?;
+                }
+            }
+            self._jacobian_updates(
+                self.state.h * self.alpha[self.state.order],
+                SolverState::Checkpoint,
+            )?;
         }
 
         self._predict_forward();
@@ -1391,7 +1409,7 @@ where
                     self._jacobian_updates(
                         new_h * self.alpha[order],
                         SolverState::SecondConvergenceFail,
-                    );
+                    )?;
 
                     // new prediction
                     self._predict_forward();
@@ -1404,7 +1422,7 @@ where
                     self._jacobian_updates(
                         self.state.h * self.alpha[order],
                         SolverState::FirstConvergenceFail,
-                    );
+                    )?;
                     convergence_fail = true;
                     // same prediction as last time
                 }
@@ -1451,7 +1469,7 @@ where
                     factor.to_f64().unwrap()
                 );
                 let new_h = self._update_step_size(factor)?;
-                self._jacobian_updates(new_h * self.alpha[order], SolverState::ErrorTestFail);
+                self._jacobian_updates(new_h * self.alpha[order], SolverState::ErrorTestFail)?;
 
                 // new prediction
                 self._predict_forward();
@@ -1559,7 +1577,7 @@ where
                     new_h.to_f64().unwrap(),
                     order
                 );
-                self._jacobian_updates(new_h * self.alpha[order], SolverState::StepSuccess);
+                self._jacobian_updates(new_h * self.alpha[order], SolverState::StepSuccess)?;
             }
         }
 
@@ -1647,13 +1665,65 @@ mod test {
             test_solve_soln_adjoint_with_single_reset_root, test_state_mut,
             test_state_mut_on_problem,
         },
-        scale, ConstantOp, Context, DenseMatrix, FaerLU, FaerMat, FaerSparseLU, FaerSparseMat,
-        MatrixCommon, NalgebraLU, OdeBuilder, OdeEquations, OdeSolverMethod, OdeSolverStopReason,
-        Op, Vector, VectorView,
+        scale, ConstantOp, Context, DenseMatrix, DiffsolError, FaerLU, FaerMat, FaerSparseLU,
+        FaerSparseMat, MatrixCommon, NalgebraLU, OdeBuilder, OdeEquations, OdeSolverMethod,
+        OdeSolverStopReason, Op, Vector, VectorView,
     };
+    use diffsol_la::{error::LaError, LinearSolver as LaLinearSolver};
 
     type M = NalgebraMat<f64>;
     type LS = NalgebraLU<f64>;
+
+    #[derive(Default)]
+    struct FailingSetupLinearSolver;
+
+    impl LaLinearSolver<M> for FailingSetupLinearSolver {
+        fn set_linearisation<
+            C: diffsol_la::LinearOp<
+                T = <M as MatrixCommon>::T,
+                V = <M as MatrixCommon>::V,
+                M = M,
+                C = <M as MatrixCommon>::C,
+            >,
+        >(
+            &mut self,
+            _op: &C,
+        ) -> Result<(), LaError> {
+            Err(LaError::Other("linearisation setup failed".to_owned()))
+        }
+
+        fn set_sparsity<
+            C: diffsol_la::LinearOp<
+                T = <M as MatrixCommon>::T,
+                V = <M as MatrixCommon>::V,
+                M = M,
+                C = <M as MatrixCommon>::C,
+            >,
+        >(
+            &mut self,
+            _op: &C,
+        ) -> Result<(), LaError> {
+            Err(LaError::Other("sparsity setup failed".to_owned()))
+        }
+
+        fn solve_in_place(&self, _b: &mut <M as MatrixCommon>::V) -> Result<(), LaError> {
+            unreachable!("the constructor must return the setup error before solving")
+        }
+    }
+
+    #[test]
+    fn bdf_constructor_propagates_linear_solver_setup_error() {
+        let (problem, _) = exponential_decay_problem::<M>(false);
+
+        let result = problem.bdf::<FailingSetupLinearSolver>();
+
+        assert!(matches!(
+            result,
+            Err(DiffsolError::LaError(LaError::Other(message)))
+                if message == "sparsity setup failed"
+        ));
+    }
+
     #[test]
     fn bdf_state_mut() {
         test_state_mut(test_problem::<M>(false).bdf::<LS>().unwrap());

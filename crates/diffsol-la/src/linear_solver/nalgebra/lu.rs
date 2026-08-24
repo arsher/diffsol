@@ -63,17 +63,21 @@ impl<T: NalgebraScalar> LinearSolver<NalgebraMat<T>> for LU<T> {
     >(
         &mut self,
         op: &C,
-    ) {
-        let matrix = self.matrix.as_mut().expect("Matrix not set");
+    ) -> Result<(), LaError> {
+        let matrix = self
+            .matrix
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
         op.matrix_inplace(matrix);
         if matrix.context.nbatch() == 1 {
             self.lu = vec![matrix.data.clone().lu()];
-            return;
+            return Ok(());
         }
         let ncols = matrix.data.ncols() / matrix.context.nbatch();
         self.lu = (0..matrix.context.nbatch())
             .map(|batch| matrix.data.columns(batch * ncols, ncols).into_owned().lu())
             .collect();
+        Ok(())
     }
 
     fn set_sparsity<
@@ -81,11 +85,13 @@ impl<T: NalgebraScalar> LinearSolver<NalgebraMat<T>> for LU<T> {
     >(
         &mut self,
         op: &C,
-    ) {
+    ) -> Result<(), LaError> {
         let ncols = op.ncols();
         let nrows = op.nrows();
         let matrix = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), *op.context());
         self.matrix = Some(matrix);
+        self.lu.clear();
+        Ok(())
     }
 }
 
@@ -101,8 +107,8 @@ mod tests {
     fn test_lu() {
         let mut s = LU::<f64>::default();
         let op = diagonal_op::<NalgebraMat<f64>>(2.0);
-        s.set_sparsity(&op);
-        s.set_linearisation(&op);
+        s.set_sparsity(&op).unwrap();
+        s.set_linearisation(&op).unwrap();
         let b = NalgebraVec::from_vec(vec![2.0, 4.0], Default::default());
         let x = s.solve(&b).unwrap();
         x.assert_eq_st(

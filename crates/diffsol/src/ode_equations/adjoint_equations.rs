@@ -9,7 +9,8 @@ use crate::{
     error::DiffsolError, op::nonlinear_op::NonLinearOpJacobian, AugmentedOdeEquations,
     CheckpointingPath, ConstantOp, ConstantOpSensAdjoint, LinearOp, LinearOpTranspose, Matrix,
     NonLinearOp, NonLinearOpAdjoint, NonLinearOpSensAdjoint, OdeEquations, OdeEquationsAdjoint,
-    OdeEquationsRef, OdeSolverMethod, OdeSolverProblem, OdeSolverState, Op, Scalar, Vector,
+    OdeEquationsRef, OdeSolverMethod, OdeSolverProblem, OdeSolverState, Op, OperatorError,
+    OperatorResult, Scalar, Vector,
 };
 
 pub struct AdjointContext<'a, Eqn, State, Method>
@@ -77,10 +78,10 @@ where
         self.checkpointers.pop()
     }
 
-    pub fn set_state(&mut self, t: Eqn::T) {
+    pub fn set_state(&mut self, t: Eqn::T) -> OperatorResult {
         if let Some(last_t) = self.last_t {
             if last_t == t {
-                return;
+                return Ok(());
             }
         }
         // clamp tiny boundary overshoots to the boundary values to avoid interpolation errors
@@ -112,16 +113,17 @@ where
                 let mut solver = solver.borrow_mut();
                 self.checkpointers[active_checkpointer]
                     .interpolate(Some(&mut *solver), t_interp, x)
-                    .unwrap();
+                    .map_err(OperatorError::fatal)?;
             }
             None => self.checkpointers[active_checkpointer]
                 .interpolate::<Method>(None, t_interp, x)
-                .unwrap(),
+                .map_err(OperatorError::fatal)?,
         }
         // for diffsl, we need to set data for the adjoint state!
         // basically just involves calling the normal rhs function with the new self.x
         // todo: this seems a bit hacky, perhaps a dedicated function on the trait for this?
-        self.eqn.rhs().call(&self.x, t_interp);
+        self.eqn.rhs().call(&self.x, t_interp)?;
+        Ok(())
     }
 
     pub fn state(&self) -> &Eqn::V {
@@ -182,15 +184,21 @@ impl<Eqn> LinearOp for AdjointMass<'_, Eqn>
 where
     Eqn: OdeEquationsAdjoint,
 {
-    fn gemv_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         self.eqn
             .mass()
             .unwrap()
-            .gemv_transpose_inplace(x, t, beta, y);
+            .gemv_transpose_inplace(x, t, beta, y)
     }
 
-    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
-        self.eqn.mass().unwrap().transpose_inplace(t, y);
+    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self.eqn.mass().unwrap().transpose_inplace(t, y)
     }
 
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -328,8 +336,8 @@ where
     Method: OdeSolverMethod<'a, Eqn>,
 {
     /// F(λ, x, t) = -f^T_x(x, t) λ - g^T_x(x,t)
-    fn call_inplace(&self, lambda: &Self::V, t: Self::T, y: &mut Self::V) {
-        self.context.borrow_mut().set_state(t);
+    fn call_inplace(&self, lambda: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
+        self.context.borrow_mut().set_state(t)?;
         let context = self.context.borrow();
         let x = context.state();
 
@@ -348,6 +356,7 @@ where
                 y.add_assign(col);
             }
         }
+        Ok(())
     }
 }
 
@@ -357,17 +366,25 @@ where
     Method: OdeSolverMethod<'a, Eqn>,
 {
     // J = -f^T_x(x, t)
-    fn jac_mul_inplace(&self, _x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
-        self.context.borrow_mut().set_state(t);
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
+        self.context.borrow_mut().set_state(t)?;
         let context = self.context.borrow();
         let x = context.state();
         self.eqn.rhs().jac_transpose_mul_inplace(x, t, v, y);
+        Ok(())
     }
-    fn jacobian_inplace(&self, _x: &Self::V, t: Self::T, y: &mut Self::M) {
-        self.context.borrow_mut().set_state(t);
+    fn jacobian_inplace(&self, _x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self.context.borrow_mut().set_state(t)?;
         let context = self.context.borrow();
         let x = context.state();
         self.eqn.rhs().adjoint_inplace(x, t, y);
+        Ok(())
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.eqn.rhs().adjoint_sparsity()
@@ -444,8 +461,8 @@ where
     Method: OdeSolverMethod<'a, Eqn>,
 {
     /// F(λ, x, t) = -g_p(x, t) - λ^T f_p(x, t)
-    fn call_inplace(&self, lambda: &Self::V, t: Self::T, y: &mut Self::V) {
-        self.context.borrow_mut().set_state(t);
+    fn call_inplace(&self, lambda: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
+        self.context.borrow_mut().set_state(t)?;
         let context = self.context.borrow();
         let x = context.state();
         self.eqn.rhs().sens_transpose_mul_inplace(x, t, lambda, y);
@@ -458,6 +475,7 @@ where
                 y.add_assign(&*tmp);
             }
         }
+        Ok(())
     }
 }
 
@@ -467,17 +485,25 @@ where
     Method: OdeSolverMethod<'a, Eqn>,
 {
     // J = -f_p(x, t)
-    fn jac_mul_inplace(&self, _x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
-        self.context.borrow_mut().set_state(t);
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
+        self.context.borrow_mut().set_state(t)?;
         let context = self.context.borrow();
         let x = context.state();
         self.eqn.rhs().sens_transpose_mul_inplace(x, t, v, y);
+        Ok(())
     }
-    fn jacobian_inplace(&self, _x: &Self::V, t: Self::T, y: &mut Self::M) {
-        self.context.borrow_mut().set_state(t);
+    fn jacobian_inplace(&self, _x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self.context.borrow_mut().set_state(t)?;
         let context = self.context.borrow();
         let x = context.state();
         self.eqn.rhs().sens_adjoint_inplace(x, t, y);
+        Ok(())
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.eqn.rhs().sens_adjoint_sparsity()
@@ -626,12 +652,17 @@ where
         self.rhs.with_out
     }
 
-    pub fn correct_sg_for_init(&self, t: Eqn::T, s: &[Eqn::V], sg: &mut [Eqn::V]) {
+    pub fn correct_sg_for_init(
+        &self,
+        t: Eqn::T,
+        s: &[Eqn::V],
+        sg: &mut [Eqn::V],
+    ) -> Result<(), DiffsolError> {
         let mut tmp = self.tmp.borrow_mut();
         for (s_i, sg_i) in s.iter().zip(sg.iter_mut()) {
             if let Some(mass) = self.eqn.mass() {
                 let mut tmp2 = self.tmp2.borrow_mut();
-                mass.call_transpose_inplace(s_i, t, &mut tmp2);
+                mass.call_transpose_inplace(s_i, t, &mut tmp2)?;
                 self.eqn
                     .init()
                     .sens_transpose_mul_inplace(t, &tmp2, &mut tmp);
@@ -641,11 +672,12 @@ where
                 sg_i.sub_assign(&*tmp);
             }
         }
+        Ok(())
     }
 
     pub fn interpolate_forward_state(&self, t: Eqn::T, y: &mut Eqn::V) -> Result<(), DiffsolError> {
         let mut context = self.context.borrow_mut();
-        context.set_state(t);
+        context.set_state(t)?;
         y.copy_from(context.state());
         Ok(())
     }
@@ -875,7 +907,7 @@ mod tests {
         // F(s, t)_0 =  |a 0| |1| = |a| = |0.1|
         //              |0 a| |2|   |2a| = |0.2|
         let v = Vcpu::from_vec(vec![1.0, 2.0], *ctx);
-        let f = adj_eqn.rhs.call(&v, state.t);
+        let f = adj_eqn.rhs.call(&v, state.t).unwrap();
         let f_expect = Vcpu::from_vec(vec![0.1, 0.2], *ctx);
         f.assert_eq_st(&f_expect, 1e-10);
 
@@ -884,7 +916,7 @@ mod tests {
         // f_x^T = |-a 0|
         //         |0 -a|
         // J = -f_x^T
-        let adjoint = adj_eqn.rhs.jacobian(&state.y, state.t);
+        let adjoint = adj_eqn.rhs.jacobian(&state.y, state.t).unwrap();
         assert_eq!(adjoint.nrows(), 2);
         assert_eq!(adjoint.ncols(), 2);
         assert_eq!(adjoint.get_index(0, 0), 0.1);
@@ -904,7 +936,7 @@ mod tests {
         //            = |1  1| |1| + |0| = |3|
         //              |0  0| |2|  |0|  = |0|
         adj_eqn.set_index(0);
-        let out = adj_eqn.out.call(&v, state.t);
+        let out = adj_eqn.out.call(&v, state.t).unwrap();
         let out_expect = Vcpu::from_vec(vec![3.0, 0.0], *ctx);
         out.assert_eq_st(&out_expect, 1e-10);
 
@@ -913,7 +945,7 @@ mod tests {
         //       |0 -a|
         // F(s, t)_0 =  |a 0| |1| - |1.0| = | a - 1| = |-0.9|
         //              |0 a| |2|   |2.0|   |2a - 2| = |-1.8|
-        let f = adj_eqn.rhs.call(&v, state.t);
+        let f = adj_eqn.rhs.call(&v, state.t).unwrap();
         let f_expect = Vcpu::from_vec(vec![-0.9, -1.8], *ctx);
         f.assert_eq_st(&f_expect, 1e-10);
     }
@@ -958,7 +990,7 @@ mod tests {
         // f_x^T = |-a 0|
         //         |0 -a|
         // J = -f_x^T
-        let adjoint = adj_eqn.rhs.jacobian(&state.y, state.t);
+        let adjoint = adj_eqn.rhs.jacobian(&state.y, state.t).unwrap();
         assert_eq!(adjoint.nrows(), 2);
         assert_eq!(adjoint.ncols(), 2);
         let (idx, vals) = adjoint.triplet_iter();
@@ -983,7 +1015,7 @@ mod tests {
         //              |0 a| |2|   |2.0|   |2a - 2| = |-1.8|
         adj_eqn.set_index(0);
         let v = FaerVec::from_vec(vec![1.0, 2.0], *ctx);
-        let f = adj_eqn.rhs.call(&v, state.t);
+        let f = adj_eqn.rhs.call(&v, state.t).unwrap();
         let f_expect = FaerVec::from_vec(vec![-0.9, -1.8], *ctx);
         f.assert_eq_st(&f_expect, 1e-10);
     }

@@ -10,7 +10,9 @@ use diffsol::{
 };
 
 mod common;
-use common::{bench_explicit, bench_implicit, bench_implicit_cg, bench_implicit_rt};
+use common::{
+    bench_explicit, bench_implicit, bench_implicit_cg, bench_implicit_cg_result, bench_implicit_rt,
+};
 
 fn criterion_benchmark(c: &mut Criterion) {
     // 10 samples over a second is criterion's floor, and it made the CI numbers useless: the
@@ -217,7 +219,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // -------------------------------------------------------------------------
     {
         let mut g = c.benchmark_group("foodweb_ci");
-        bench_implicit_cg!(
+        bench_implicit_cg_result!(
             g,
             faer_sparse_bdf,
             bdf,
@@ -227,7 +229,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             5,
             10
         );
-        bench_implicit_cg!(
+        bench_implicit_cg_result!(
             g,
             faer_sparse_tr_bdf2,
             tr_bdf2,
@@ -237,7 +239,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             5,
             10
         );
-        bench_implicit_cg!(
+        bench_implicit_cg_result!(
             g,
             faer_sparse_esdirk,
             esdirk34,

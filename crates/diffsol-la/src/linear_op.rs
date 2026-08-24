@@ -1,4 +1,4 @@
-use crate::{Context, IndexType, Matrix, Scalar, Vector};
+use crate::{Context, IndexType, Matrix, OperatorResult, Scalar, Vector};
 
 /// A linear operator `A` for use with the [crate::LinearSolver] trait.
 ///
@@ -28,7 +28,7 @@ pub trait LinearOp {
     ///
     /// `y` is assumed to have been initialised with the sparsity pattern
     /// returned by [Self::sparsity].
-    fn matrix_inplace(&self, y: &mut Self::M);
+    fn matrix_inplace(&self, y: &mut Self::M) -> OperatorResult;
 
     /// The sparsity pattern of the operator's matrix, or `None` if dense.
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {

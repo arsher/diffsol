@@ -38,7 +38,7 @@ impl<T: FaerScalar> LinearSolver<FaerMat<T>> for LU<T> {
             .matrix
             .as_mut()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
-        op.matrix_inplace(matrix);
+        op.matrix_inplace(matrix)?;
         let nc = matrix.ncols();
         self.lu = (0..matrix.context.nbatch())
             .map(|b| matrix.data.rb().subcols(b * nc, nc).full_piv_lu())

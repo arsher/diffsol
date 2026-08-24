@@ -68,7 +68,7 @@ impl<T: NalgebraScalar> LinearSolver<NalgebraMat<T>> for LU<T> {
             .matrix
             .as_mut()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
-        op.matrix_inplace(matrix);
+        op.matrix_inplace(matrix)?;
         if matrix.context.nbatch() == 1 {
             self.lu = vec![matrix.data.clone().lu()];
             return Ok(());

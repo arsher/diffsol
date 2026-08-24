@@ -1,6 +1,6 @@
 use crate::{
-    scale, LinearOp, Matrix, MatrixSparsityRef, NonLinearOpJacobian, OdeEquationsImplicit, Vector,
-    VectorIndex,
+    scale, LinearOp, Matrix, MatrixSparsityRef, NonLinearOpJacobian, OdeEquationsImplicit,
+    OperatorResult, Vector, VectorIndex,
 };
 use num_traits::One;
 use std::cell::RefCell;
@@ -25,11 +25,11 @@ impl<'a, Eqn: OdeEquationsImplicit> InitOp<'a, Eqn> {
         t0: Eqn::T,
         y0: &Eqn::V,
         algebraic_indices: <Eqn::V as Vector>::Index,
-    ) -> Self {
+    ) -> OperatorResult<Self> {
         let n = eqn.rhs().nstates();
 
-        let rhs_jac = eqn.rhs().jacobian(y0, t0);
-        let mass = eqn.mass().unwrap().matrix(t0);
+        let rhs_jac = eqn.rhs().jacobian(y0, t0)?;
+        let mass = eqn.mass().unwrap().matrix(t0)?;
 
         // equations are:
         // h(t, u, v, du) = 0
@@ -65,13 +65,13 @@ impl<'a, Eqn: OdeEquationsImplicit> InitOp<'a, Eqn> {
 
         let y0 = y0.clone();
         let y0 = RefCell::new(y0);
-        Self {
+        Ok(Self {
             eqn,
             jac,
             y0,
             neg_mass,
             algebraic_indices,
-        }
+        })
     }
 
     pub fn scatter_soln(&self, soln: &Eqn::V, y: &mut Eqn::V, dy: &mut Eqn::V) {
@@ -104,29 +104,38 @@ impl<Eqn: OdeEquationsImplicit> Op for InitOp<'_, Eqn> {
 impl<Eqn: OdeEquationsImplicit> NonLinearOp for InitOp<'_, Eqn> {
     // -M_u du + f(u, v)
     // g(t, u, v)
-    fn call_inplace(&self, x: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) {
+    fn call_inplace(&self, x: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) -> OperatorResult {
         // input x = (du, v)
         // self.y0 = (u, v)
         let mut y0 = self.y0.borrow_mut();
         y0.copy_from_indices(x, &self.algebraic_indices);
 
         // y = (f; g)
-        self.eqn.rhs().call_inplace(&y0, t, y);
+        self.eqn.rhs().call_inplace(&y0, t, y)?;
 
         // y = -M x + y
         self.neg_mass.gemv(Eqn::T::one(), x, Eqn::T::one(), y);
+        Ok(())
     }
 }
 
 impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for InitOp<'_, Eqn> {
     // J v
-    fn jac_mul_inplace(&self, _x: &Eqn::V, _t: Eqn::T, v: &Eqn::V, y: &mut Eqn::V) {
+    fn jac_mul_inplace(
+        &self,
+        _x: &Eqn::V,
+        _t: Eqn::T,
+        v: &Eqn::V,
+        y: &mut Eqn::V,
+    ) -> OperatorResult {
         self.jac.gemv(Eqn::T::one(), v, Eqn::T::one(), y);
+        Ok(())
     }
 
     // M - c * f'(y)
-    fn jacobian_inplace(&self, _x: &Self::V, _t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, _x: &Self::V, _t: Self::T, y: &mut Self::M) -> OperatorResult {
         y.copy_from(&self.jac);
+        Ok(())
     }
 
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -159,9 +168,10 @@ mod tests {
             .mass()
             .unwrap()
             .matrix(t)
+            .unwrap()
             .partition_indices_by_zero_diagonal();
 
-        let initop = InitOp::new(&problem.eqn, t, &y0, algebraic_indices);
+        let initop = InitOp::new(&problem.eqn, t, &y0, algebraic_indices).unwrap();
         // check that the init function is correct
         let mut y_out = Vcpu::from_vec(vec![0.0, 0.0, 0.0], *problem.context());
 
@@ -186,7 +196,7 @@ mod tests {
         //              |-1 * 5 + -0.1 * 2|   |-5.2|
         //              |2 - 1|               |1|
         let du_v = Vcpu::from_vec(vec![dy0[0], dy0[1], y0[2]], *problem.context());
-        initop.call_inplace(&du_v, t, &mut y_out);
+        initop.call_inplace(&du_v, t, &mut y_out).unwrap();
         let y_out_expect = Vcpu::from_vec(vec![-4.1, -5.2, 1.0], *problem.context());
         y_out.assert_eq_st(&y_out_expect, 1e-10);
 
@@ -196,7 +206,7 @@ mod tests {
         // J = (-M_u, df/dv) = |-1 0 0|
         //                   = |0 -1 0|
         //     (0,    dg/dv) = |0 0 1|
-        let jac = initop.jacobian(&du_v, t);
+        let jac = initop.jacobian(&du_v, t).unwrap();
         assert_eq!(jac.get_index(0, 0), -1.0);
         assert_eq!(jac.get_index(0, 1), 0.0);
         assert_eq!(jac.get_index(0, 2), 0.0);

@@ -1,5 +1,78 @@
+use std::{error::Error, sync::Arc};
+
 use faer::sparse::CreationError;
 use thiserror::Error;
+
+/// Classification applied to an error returned by a user-provided operator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperatorErrorKind {
+    /// The current trial point was invalid, but a different point may succeed.
+    Recoverable,
+    /// Continuing the solve cannot correct the failure.
+    Fatal,
+}
+
+impl std::fmt::Display for OperatorErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Recoverable => f.write_str("recoverable"),
+            Self::Fatal => f.write_str("fatal"),
+        }
+    }
+}
+
+/// A classified error returned by a user-provided operator.
+///
+/// The original error is retained behind an [`Arc`], so callers can clone this
+/// value as solver state requires and still downcast to their concrete error.
+#[derive(Clone, Debug, Error)]
+#[error("{kind} operator error: {source}")]
+pub struct OperatorError {
+    kind: OperatorErrorKind,
+    #[source]
+    source: Arc<dyn Error + 'static>,
+}
+
+impl OperatorError {
+    /// Construct an error for a trial point that may succeed after retrying.
+    pub fn recoverable(error: impl Error + 'static) -> Self {
+        Self {
+            kind: OperatorErrorKind::Recoverable,
+            source: Arc::new(error),
+        }
+    }
+
+    /// Construct an error that must terminate the solve.
+    pub fn fatal(error: impl Error + 'static) -> Self {
+        Self {
+            kind: OperatorErrorKind::Fatal,
+            source: Arc::new(error),
+        }
+    }
+
+    /// Return the error's retry classification.
+    pub fn kind(&self) -> OperatorErrorKind {
+        self.kind
+    }
+
+    /// Return the original concrete error when its type matches `E`.
+    pub fn downcast_ref<E: Error + 'static>(&self) -> Option<&E> {
+        self.source.downcast_ref()
+    }
+}
+
+impl LaError {
+    /// Return the user-operator error retained by this error, if any.
+    pub fn operator_error(&self) -> Option<&OperatorError> {
+        match self {
+            Self::OperatorError(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Result returned by fallible operator evaluations.
+pub type OperatorResult<T = ()> = Result<T, OperatorError>;
 
 /// Error type for the diffsol linear algebra crate (`diffsol-la`).
 ///
@@ -8,6 +81,8 @@ use thiserror::Error;
 /// `diffsol` crate and can be converted into `diffsol`'s top-level error type.
 #[derive(Error, Debug, Clone)]
 pub enum LaError {
+    #[error(transparent)]
+    OperatorError(#[from] OperatorError),
     #[error("Linear solver error: {0}")]
     LinearSolverError(#[from] LinearSolverError),
     #[error("Matrix error: {0}")]
@@ -36,10 +111,6 @@ pub enum LinearSolverError {
     KluFailedToAnalyze,
     #[error("KLU failed to factorize")]
     KluFailedToFactorize,
-    #[error("Faer sparse symbolic analysis failed: {0}")]
-    FaerSparseSymbolicAnalysisFailed(String),
-    #[error("Faer sparse numeric factorization failed: {0}")]
-    FaerSparseNumericFactorizationFailed(String),
     #[error("Error: {0}")]
     Other(String),
 }

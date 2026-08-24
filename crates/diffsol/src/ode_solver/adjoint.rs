@@ -152,7 +152,7 @@ where
         let aug_eqn = aug_eqn.unwrap();
         if path_starts_at_problem_t0 {
             let state_mut = state.as_mut();
-            aug_eqn.correct_sg_for_init(problem_t0, state_mut.s, state_mut.sg);
+            aug_eqn.correct_sg_for_init(problem_t0, state_mut.s, state_mut.sg)?;
         }
 
         Ok((state, aug_eqn.into_checkpointing()))
@@ -523,7 +523,7 @@ where
         let eqn = &solver.problem().eqn;
         let ctx = solver.problem().eqn.context();
         let (partition, mass_dd, rhs_jac_aa, rhs_jac_ad) = if let Some(_mass) = eqn.mass() {
-            let mass_matrix = solver.mass().unwrap();
+            let mass_matrix = solver.mass()?.unwrap();
             let (algebraic_indices, differential_indices) =
                 mass_matrix.partition_indices_by_zero_diagonal();
 
@@ -539,7 +539,7 @@ where
             // setup jacobian solver if there are algebraic indices
             let (rhs_jac_aa, rhs_jac_ad) = if algebraic_indices.len() > 0 {
                 let jacobian = solver
-                    .jacobian()
+                    .jacobian()?
                     .ok_or(DiffsolError::from(OdeSolverError::JacobianNotAvailable))?;
                 let [_, (ad, ad_idx), _, (aa, aa_idx)] = jacobian.split(&algebraic_indices);
                 let mut rhs_jac_aa = BlockInfoSol {
@@ -612,7 +612,7 @@ where
 
         // if there are algebraic indices, setup the solver for (f*_y^a)^{-1} and M_dd*^-1
         if let Some(rhs_jac_aa) = self.rhs_jac_aa.as_mut() {
-            let jacobian = solver.jacobian().unwrap();
+            let jacobian = solver.jacobian()?.unwrap();
             let rhs_jac_ad = self.rhs_jac_ad.as_mut().unwrap();
             rhs_jac_ad
                 .block
@@ -632,7 +632,7 @@ where
 
         // if there is a mass matrix, setup the solver for M_dd*^-1
         if let Some(mass_dd) = self.mass_dd.as_mut() {
-            let mass = solver.mass().unwrap();
+            let mass = solver.mass()?.unwrap();
             mass_dd.block.m_mut().gather(&mass, &mass_dd.src_indices);
             crate::LinearSolver::set_linearisation(
                 &mut mass_dd.solver,

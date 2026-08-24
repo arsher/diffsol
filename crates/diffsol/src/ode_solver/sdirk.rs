@@ -13,7 +13,7 @@ use crate::{
     nonlinear_solver::NonLinearSolver, op::sdirk::SdirkCallable, AugmentedOdeEquations,
     AugmentedOdeEquationsImplicit, Convergence, DefaultDenseMatrix, DenseMatrix, JacobianUpdate,
     Matrix, NoLineSearch, OdeEquationsImplicit, OdeEquationsImplicitSens, OdeSolverMethod,
-    OdeSolverProblem, OdeSolverState, Op, SensEquations, StateRef, StateRefMut,
+    OdeSolverProblem, OdeSolverState, Op, OperatorErrorKind, SensEquations, StateRef, StateRefMut,
 };
 use log::debug;
 use log::trace;
@@ -351,23 +351,29 @@ where
         self.rk.problem()
     }
 
-    fn jacobian(&self) -> Option<std::cell::Ref<'_, <Eqn>::M>> {
+    fn jacobian(&self) -> Result<Option<std::cell::Ref<'_, <Eqn>::M>>, DiffsolError> {
         let t = self.rk.state().t;
         if let Some(op) = self.op.as_ref() {
             let x = &self.rk.state().y;
-            Some(op.rhs_jac(x, t))
+            Ok(Some(op.rhs_jac(x, t)?))
         } else {
             let x = &self.rk.state().s[0];
-            self.s_op.as_ref().map(|s_op| s_op.rhs_jac(x, t))
+            self.s_op
+                .as_ref()
+                .map(|s_op| s_op.rhs_jac(x, t).map_err(Into::into))
+                .transpose()
         }
     }
 
-    fn mass(&self) -> Option<std::cell::Ref<'_, <Eqn>::M>> {
+    fn mass(&self) -> Result<Option<std::cell::Ref<'_, <Eqn>::M>>, DiffsolError> {
         let t = self.rk.state().t;
         if let Some(op) = self.op.as_ref() {
-            Some(op.mass(t))
+            Ok(Some(op.mass(t)?))
         } else {
-            self.s_op.as_ref().map(|s_op| s_op.mass(t))
+            self.s_op
+                .as_ref()
+                .map(|s_op| s_op.mass(t).map_err(Into::into))
+                .transpose()
         }
     }
 
@@ -436,6 +442,7 @@ where
         // loop until step is accepted
         let mut nattempts = 0;
         let mut updated_jacobian = false;
+        let mut last_recoverable_error = None;
         let start = if self.rk.skip_first_stage() { 1 } else { 0 };
         let (factor, error_norm) = 'step: loop {
             // start a step attempt
@@ -451,8 +458,13 @@ where
                     &mut self.nonlinear_solver,
                     &mut self.convergence,
                 ) {
-                    if matches!(error, DiffsolError::LaError(_)) {
-                        return Err(error);
+                    match error.operator_error().map(|error| error.kind()) {
+                        Some(OperatorErrorKind::Fatal) => return Err(error),
+                        Some(OperatorErrorKind::Recoverable) => {
+                            last_recoverable_error = Some(error.clone());
+                        }
+                        None if matches!(error, DiffsolError::LaError(_)) => return Err(error),
+                        None => {}
                     }
                     if !updated_jacobian {
                         // newton iteration did not converge, so update jacobian and try again
@@ -471,11 +483,13 @@ where
                         self.jacobian_updates(h, SolverState::SecondConvergenceFail)?;
                     }
                     self.rk.reset_prev_error();
-                    self.rk.solve_fail(
+                    if let Err(limit_error) = self.rk.solve_fail(
                         h,
                         self.config.minimum_timestep,
                         self.config.maximum_newton_fails,
-                    )?;
+                    ) {
+                        return Err(last_recoverable_error.unwrap_or(limit_error));
+                    }
                     // try again....
                     continue 'step;
                 }
@@ -591,6 +605,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::{cell::Cell, rc::Rc};
+
     #[cfg(feature = "cuda")]
     use crate::ode_equations::test_models::{
         exponential_decay::exponential_decay_problem_batched,
@@ -619,11 +635,120 @@ mod test {
             test_state_mut_on_problem,
         },
         scale, ConstantOp, Context, DenseMatrix, FaerSparseLU, FaerSparseMat, MatrixCommon,
-        NalgebraLU, NalgebraVec, OdeEquations, OdeSolverMethod, Op, Vector, VectorView,
+        NalgebraLU, NalgebraVec, OdeBuilder, OdeEquations, OdeSolverMethod, Op, OperatorError,
+        OperatorErrorKind, Vector, VectorView,
     };
+    use thiserror::Error;
 
     type M = NalgebraMat<f64>;
     type LS = NalgebraLU<f64>;
+
+    #[derive(Debug, Error)]
+    #[error("{message}")]
+    struct ModelCallbackError {
+        message: &'static str,
+        _not_send_or_sync: Rc<()>,
+    }
+
+    #[test]
+    fn sdirk_returns_a_fatal_rhs_error_without_another_model_call() {
+        let calls = Rc::new(Cell::new(0));
+        let armed = Rc::new(Cell::new(false));
+        let calls_in_rhs = calls.clone();
+        let armed_in_rhs = armed.clone();
+        let problem = OdeBuilder::<M>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    calls_in_rhs.set(calls_in_rhs.get() + 1);
+                    if armed_in_rhs.get() {
+                        return Err(OperatorError::fatal(ModelCallbackError {
+                            message: "fatal SDIRK component evaluation",
+                            _not_send_or_sync: Rc::new(()),
+                        }));
+                    }
+                    y[0] = -x[0];
+                    Ok(())
+                },
+                |_x, _p, _t, v, y| {
+                    y[0] = -v[0];
+                    Ok(())
+                },
+            )
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut solver = problem.esdirk34::<LS>().unwrap();
+        let setup_calls = calls.get();
+        armed.set(true);
+
+        let error = match solver.step() {
+            Ok(_) => panic!("fatal callback unexpectedly completed an SDIRK step"),
+            Err(error) => error,
+        };
+
+        let operator_error = error
+            .operator_error()
+            .unwrap_or_else(|| panic!("expected operator error, got {error:?}"));
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Fatal);
+        assert_eq!(
+            operator_error
+                .downcast_ref::<ModelCallbackError>()
+                .unwrap()
+                .message,
+            "fatal SDIRK component evaluation"
+        );
+        assert_eq!(calls.get(), setup_calls + 1);
+    }
+
+    #[test]
+    fn sdirk_returns_the_recoverable_rhs_error_when_retries_are_exhausted() {
+        let calls = Rc::new(Cell::new(0));
+        let armed = Rc::new(Cell::new(false));
+        let calls_in_rhs = calls.clone();
+        let armed_in_rhs = armed.clone();
+        let problem = OdeBuilder::<M>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    calls_in_rhs.set(calls_in_rhs.get() + 1);
+                    if armed_in_rhs.get() {
+                        return Err(OperatorError::recoverable(ModelCallbackError {
+                            message: "persistent SDIRK model-domain refusal",
+                            _not_send_or_sync: Rc::new(()),
+                        }));
+                    }
+                    y[0] = -x[0];
+                    Ok(())
+                },
+                |_x, _p, _t, v, y| {
+                    y[0] = -v[0];
+                    Ok(())
+                },
+            )
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut solver = problem.esdirk34::<LS>().unwrap();
+        let setup_calls = calls.get();
+        armed.set(true);
+
+        let error = match solver.step() {
+            Ok(_) => panic!("persistent callback refusal unexpectedly completed an SDIRK step"),
+            Err(error) => error,
+        };
+
+        let operator_error = error
+            .operator_error()
+            .unwrap_or_else(|| panic!("expected operator error, got {error:?}"));
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Recoverable);
+        assert_eq!(
+            operator_error
+                .downcast_ref::<ModelCallbackError>()
+                .unwrap()
+                .message,
+            "persistent SDIRK model-domain refusal"
+        );
+        assert!(calls.get() > setup_calls + 1);
+    }
 
     #[test]
     fn sdirk_state_mut() {

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use crate::{
     op::nonlinear_op::NonLinearOpJacobian, AugmentedOdeEquations, ConstantOp, ConstantOpSens,
     Matrix, NonLinearOp, NonLinearOpSens, OdeEquations, OdeEquationsImplicitSens, OdeEquationsRef,
-    OdeSolverProblem, Op, Vector,
+    OdeSolverProblem, Op, OperatorResult, Vector,
 };
 
 pub struct SensInit<'a, Eqn>
@@ -165,12 +165,13 @@ where
     Eqn: OdeEquationsImplicitSens,
 {
     /// the ith column of function F(s, t) is evaluated as J * s_i + S_i, where s_i is the ith column of the sensitivity matrix
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         let state_y = self.y.borrow();
         let sens = self.sens.borrow();
         let index = *self.index.borrow();
-        self.eqn.rhs().jac_mul_inplace(&state_y, t, x, y);
+        self.eqn.rhs().jac_mul_inplace(&state_y, t, x, y)?;
         sens.add_column_to_vector(index, y);
+        Ok(())
     }
 }
 
@@ -178,13 +179,19 @@ impl<Eqn> NonLinearOpJacobian for SensRhs<'_, Eqn>
 where
     Eqn: OdeEquationsImplicitSens,
 {
-    fn jac_mul_inplace(&self, _x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         let state_y = self.y.borrow();
-        self.eqn.rhs().jac_mul_inplace(&state_y, t, v, y);
+        self.eqn.rhs().jac_mul_inplace(&state_y, t, v, y)
     }
-    fn jacobian_inplace(&self, _x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, _x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
         let state_y = self.y.borrow();
-        self.eqn.rhs().jacobian_inplace(&state_y, t, y);
+        self.eqn.rhs().jacobian_inplace(&state_y, t, y)
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.eqn.rhs().jacobian_sparsity()
@@ -411,7 +418,7 @@ mod tests {
         //             |0 -a| |2|   |-1.0|   |-1.2|
         sens_eqn.rhs.set_param_index(0);
         let s = Vcpu::from_vec(vec![1.0, 2.0], *problem.context());
-        let f = sens_eqn.rhs.call(&s, state.t);
+        let f = sens_eqn.rhs.call(&s, state.t).unwrap();
         let f_expect = Vcpu::from_vec(vec![-1.1, -1.2], *problem.context());
         f.assert_eq_st(&f_expect, 1e-10);
     }
@@ -460,7 +467,7 @@ mod tests {
         sens_eqn.rhs.set_param_index(0);
         assert_eq!(sens_eqn.rhs.index.borrow().clone(), 0);
         let s = Vcpu::from_vec(vec![1.0, 1.0, 1.0], *problem.context());
-        let f = sens_eqn.rhs.call(&s, state.t);
+        let f = sens_eqn.rhs.call(&s, state.t).unwrap();
         let f_expect = Vcpu::from_vec(vec![-1.1, -1.1, 0.0], *problem.context());
         f.assert_eq_st(&f_expect, 1e-10);
     }

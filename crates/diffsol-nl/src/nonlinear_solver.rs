@@ -121,20 +121,27 @@ pub mod tests {
         fn context(&self) -> &Self::C {
             &self.ctx
         }
-        fn call_inplace(&self, x: &Self::V, y: &mut Self::V) {
+        fn call_inplace(&self, x: &Self::V, y: &mut Self::V) -> diffsol_la::OperatorResult {
             // y = J * x * x - 8
             self.jac.gemv(M::T::one(), x, M::T::zero(), y);
             y.component_mul_assign(x);
             y.axpy(-M::T::one(), &self.eights, M::T::one());
+            Ok(())
         }
     }
 
     impl<M: DenseMatrix> NonLinearOpJacobian for SquareOp<M> {
-        fn jac_mul_inplace(&self, x: &Self::V, v: &Self::V, y: &mut Self::V) {
+        fn jac_mul_inplace(
+            &self,
+            x: &Self::V,
+            v: &Self::V,
+            y: &mut Self::V,
+        ) -> diffsol_la::OperatorResult {
             // J = 2 * J * x * dx
             self.jac
                 .gemv(M::T::from_f64(2.0).unwrap(), x, M::T::zero(), y);
             y.component_mul_assign(v);
+            Ok(())
         }
     }
 

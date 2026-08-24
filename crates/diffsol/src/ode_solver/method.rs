@@ -85,11 +85,11 @@ where
 
     /// Returns the current jacobian matrix of the solver, if it has one
     /// Note that this will force a full recalculation of the Jacobian.
-    fn jacobian(&self) -> Option<Ref<'_, Eqn::M>>;
+    fn jacobian(&self) -> Result<Option<Ref<'_, Eqn::M>>, DiffsolError>;
 
     /// Returns the current mass matrix of the solver, if it has one
     /// Note that this will force a full recalculation of the mass matrix.
-    fn mass(&self) -> Option<Ref<'_, Eqn::M>>;
+    fn mass(&self) -> Result<Option<Ref<'_, Eqn::M>>, DiffsolError>;
 
     /// Step the solution forward by one step, altering the internal state of the solver.
     /// The return value is a `Result` containing the reason for stopping the solver, possible reasons are:
@@ -495,7 +495,7 @@ where
         // if we stopped on a root before exhausting t_eval, we need to write_out the solution at the root time to the last column of ret
         if let OdeSolverStopReason::RootFound(_, _) = stop_reason {
             if col < t_eval.len() {
-                write_state_out(self.problem(), &self.state(), &mut ret, col, &mut tmp_nout);
+                write_state_out(self.problem(), &self.state(), &mut ret, col, &mut tmp_nout)?;
                 if col + 1 < ret.ncols() {
                     ret.resize_cols(col + 1);
                 }
@@ -838,7 +838,7 @@ where
         s.interpolate_inplace(t, tmp_nstates)?;
         match s.problem().eqn.out() {
             Some(out) => {
-                out.call_inplace(tmp_nstates, t, tmp_nout);
+                out.call_inplace(tmp_nstates, t, tmp_nout)?;
                 y_out.copy_from(tmp_nout)
             }
             None => y_out.copy_from(tmp_nstates),
@@ -853,7 +853,8 @@ pub(crate) fn write_state_out<Eqn>(
     y_out: &mut <Eqn::V as DefaultDenseMatrix>::M,
     col: usize,
     tmp_nout: &mut Eqn::V,
-) where
+) -> Result<(), DiffsolError>
+where
     Eqn: OdeEquations,
     Eqn::V: DefaultDenseMatrix,
 {
@@ -863,7 +864,7 @@ pub(crate) fn write_state_out<Eqn>(
             if problem.integrate_out {
                 y_out_col.copy_from(state.g);
             } else {
-                out.call_inplace(state.y, state.t, tmp_nout);
+                out.call_inplace(state.y, state.t, tmp_nout)?;
                 y_out_col.copy_from(tmp_nout);
             }
         }
@@ -875,6 +876,7 @@ pub(crate) fn write_state_out<Eqn>(
             }
         }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -897,7 +899,7 @@ fn solve<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
 where
     Eqn::V: DefaultDenseMatrix,
 {
-    write_out(s, ret_y, ret_t, tmp_nout);
+    write_out(s, ret_y, ret_t, tmp_nout)?;
     s.set_stop_time(final_time)?;
     let has_reset = continue_after_reset && s.problem().eqn.reset().is_some();
     let mut checkpointing = checkpointing.then(|| CheckpointingRecorder::new(&*s));
@@ -905,7 +907,7 @@ where
     let stop_reason = loop {
         match s.step()? {
             OdeSolverStopReason::InternalTimestep => {
-                write_out(s, ret_y, ret_t, tmp_nout);
+                write_out(s, ret_y, ret_t, tmp_nout)?;
                 if let Some(checkpointing) = checkpointing.as_mut() {
                     checkpointing.record_sample(&*s);
                     nsteps += 1;
@@ -916,7 +918,7 @@ where
                 }
             }
             OdeSolverStopReason::TstopReached => {
-                write_out(s, ret_y, ret_t, tmp_nout);
+                write_out(s, ret_y, ret_t, tmp_nout)?;
                 break OdeSolverStopReason::TstopReached;
             }
             OdeSolverStopReason::RootFound(t_root, root_idx) => {
@@ -929,7 +931,7 @@ where
                         checkpointing.finish_segment(Some(root_idx));
                     }
                     s.apply_reset()?;
-                    write_out(s, ret_y, ret_t, tmp_nout);
+                    write_out(s, ret_y, ret_t, tmp_nout)?;
                     if let Some(checkpointing) = checkpointing.as_mut() {
                         checkpointing.start_segment_from_current(&*s);
                         nsteps = 0;
@@ -940,7 +942,7 @@ where
                         break OdeSolverStopReason::TstopReached;
                     }
                 } else {
-                    write_out(s, ret_y, ret_t, tmp_nout);
+                    write_out(s, ret_y, ret_t, tmp_nout)?;
                     if let Some(checkpointing) = checkpointing.as_mut() {
                         checkpointing.finish_segment(Some(root_idx));
                     }
@@ -967,7 +969,8 @@ fn write_out<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
     ret_y: &mut <Eqn::V as DefaultDenseMatrix>::M,
     ret_t: &mut Vec<Eqn::T>,
     tmp_nout: &mut Eqn::V,
-) where
+) -> Result<(), DiffsolError>
+where
     Eqn::V: DefaultDenseMatrix,
 {
     let t = s.state().t;
@@ -984,7 +987,7 @@ fn write_out<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
             if s.problem().integrate_out {
                 ret_y_col.copy_from(s.state().g);
             } else {
-                out.call_inplace(y, t, tmp_nout);
+                out.call_inplace(y, t, tmp_nout)?;
                 ret_y_col.copy_from(tmp_nout);
             }
         }
@@ -996,6 +999,7 @@ fn write_out<'a, Eqn: OdeEquations + 'a, S: OdeSolverMethod<'a, Eqn>>(
             }
         }
     }
+    Ok(())
 }
 
 /// Utility function to allocate the return matrix for the `solve`

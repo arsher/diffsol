@@ -1,7 +1,7 @@
 use crate::{
     ConstantOp, ConstantOpSens, ConstantOpSensAdjoint, Context, LinearOp, LinearOpTranspose,
-    Matrix, NonLinearOp, NonLinearOpAdjoint, NonLinearOpSens, NonLinearOpSensAdjoint, Scalar,
-    Vector,
+    Matrix, NonLinearOp, NonLinearOpAdjoint, NonLinearOpSens, NonLinearOpSensAdjoint,
+    OperatorResult, Scalar, Vector,
 };
 
 use nonlinear_op::NonLinearOpJacobian;
@@ -20,6 +20,8 @@ pub mod constant_closure_autodiff;
 pub mod constant_closure_with_adjoint;
 pub mod constant_closure_with_sens;
 pub mod constant_op;
+pub mod fallible_closure;
+pub mod fallible_linear_closure;
 pub mod init;
 pub mod linear_closure;
 #[cfg(feature = "autodiff")]
@@ -79,7 +81,12 @@ pub trait BuilderOp: Op {
     fn set_nstates(&mut self, nstates: usize);
     fn set_nparams(&mut self, nparams: usize);
     fn set_nout(&mut self, nout: usize);
-    fn calculate_sparsity(&mut self, y0: &Self::V, t0: Self::T, p: &Self::V);
+    fn calculate_sparsity(
+        &mut self,
+        y0: &Self::V,
+        t0: Self::T,
+        p: &Self::V,
+    ) -> Result<(), crate::LaError>;
 }
 
 impl<C: Op> Op for ParameterisedOp<'_, C> {
@@ -189,16 +196,22 @@ impl<C: Op> Op for &mut C {
 }
 
 impl<C: NonLinearOp> NonLinearOp for &C {
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         C::call_inplace(*self, x, t, y)
     }
 }
 
 impl<C: NonLinearOpJacobian> NonLinearOpJacobian for &C {
-    fn jac_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         C::jac_mul_inplace(*self, x, t, v, y)
     }
-    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
         C::jacobian_inplace(*self, x, t, y)
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -244,22 +257,34 @@ impl<C: NonLinearOpSensAdjoint> NonLinearOpSensAdjoint for &C {
 }
 
 impl<C: LinearOp> LinearOp for &C {
-    fn gemv_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         C::gemv_inplace(*self, x, t, beta, y)
     }
     fn sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         C::sparsity(*self)
     }
-    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn matrix_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         C::matrix_inplace(*self, t, y)
     }
 }
 
 impl<C: LinearOpTranspose> LinearOpTranspose for &C {
-    fn gemv_transpose_inplace(&self, x: &Self::V, t: Self::T, beta: Self::T, y: &mut Self::V) {
+    fn gemv_transpose_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        beta: Self::T,
+        y: &mut Self::V,
+    ) -> OperatorResult {
         C::gemv_transpose_inplace(*self, x, t, beta, y)
     }
-    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) {
+    fn transpose_inplace(&self, t: Self::T, y: &mut Self::M) -> OperatorResult {
         C::transpose_inplace(*self, t, y)
     }
     fn transpose_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
@@ -304,7 +329,8 @@ mod tests {
     use crate::{
         context::nalgebra::NalgebraContext, matrix::dense_nalgebra_serial::NalgebraMat, ConstantOp,
         ConstantOpSens, ConstantOpSensAdjoint, LinearOp, LinearOpTranspose, NonLinearOp,
-        NonLinearOpAdjoint, NonLinearOpJacobian, NonLinearOpSens, NonLinearOpSensAdjoint, Vector,
+        NonLinearOpAdjoint, NonLinearOpJacobian, NonLinearOpSens, NonLinearOpSensAdjoint,
+        OperatorResult, Vector,
     };
 
     use super::{Op, OpStatistics, ParameterisedOp};
@@ -349,16 +375,24 @@ mod tests {
     }
 
     impl NonLinearOp for ForwardingOp {
-        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) {
+        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) -> OperatorResult {
             self.stats.borrow_mut().increment_call();
             y.copy_from(x);
+            Ok(())
         }
     }
 
     impl NonLinearOpJacobian for ForwardingOp {
-        fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, v: &Self::V, y: &mut Self::V) {
+        fn jac_mul_inplace(
+            &self,
+            _x: &Self::V,
+            _t: Self::T,
+            v: &Self::V,
+            y: &mut Self::V,
+        ) -> OperatorResult {
             self.stats.borrow_mut().increment_jac_mul();
             y.copy_from(v);
+            Ok(())
         }
     }
 
@@ -394,16 +428,30 @@ mod tests {
     }
 
     impl LinearOp for ForwardingOp {
-        fn gemv_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+        fn gemv_inplace(
+            &self,
+            x: &Self::V,
+            _t: Self::T,
+            beta: Self::T,
+            y: &mut Self::V,
+        ) -> OperatorResult {
             self.stats.borrow_mut().increment_call();
             y.axpy(1.0, x, beta);
+            Ok(())
         }
     }
 
     impl LinearOpTranspose for ForwardingOp {
-        fn gemv_transpose_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, y: &mut Self::V) {
+        fn gemv_transpose_inplace(
+            &self,
+            x: &Self::V,
+            _t: Self::T,
+            beta: Self::T,
+            y: &mut Self::V,
+        ) -> OperatorResult {
             self.stats.borrow_mut().increment_jac_adj_mul();
             y.axpy(1.0, x, beta);
+            Ok(())
         }
     }
 
@@ -450,10 +498,10 @@ mod tests {
 
         let x = crate::NalgebraVec::from_vec(vec![3.0, 4.0], NalgebraContext::default());
         let mut y = crate::NalgebraVec::zeros(2, NalgebraContext::default());
-        NonLinearOp::call_inplace(&&op, &x, 0.0, &mut y);
+        NonLinearOp::call_inplace(&&op, &x, 0.0, &mut y).unwrap();
         y.assert_eq_st(&x, 1e-12);
 
-        op.jac_mul_inplace(&x, 0.0, &x, &mut y);
+        op.jac_mul_inplace(&x, 0.0, &x, &mut y).unwrap();
         y.assert_eq_st(&x, 1e-12);
 
         op.jac_transpose_mul_inplace(&x, 0.0, &x, &mut y);
@@ -471,10 +519,10 @@ mod tests {
             1e-12,
         );
 
-        op.gemv_inplace(&x, 0.0, 0.0, &mut y);
+        op.gemv_inplace(&x, 0.0, 0.0, &mut y).unwrap();
         y.assert_eq_st(&x, 1e-12);
 
-        op.gemv_transpose_inplace(&x, 0.0, 0.0, &mut y);
+        op.gemv_transpose_inplace(&x, 0.0, 0.0, &mut y).unwrap();
         y.assert_eq_st(&x, 1e-12);
 
         let mut y_const = crate::NalgebraVec::zeros(2, NalgebraContext::default());

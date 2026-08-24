@@ -1,5 +1,5 @@
 use super::Op;
-use crate::{scale, Matrix, Scalar, Vector};
+use crate::{scale, Matrix, OperatorResult, Scalar, Vector};
 use num_traits::{One, Signed, Zero};
 
 // NonLinearOp is a trait that defines a nonlinear operator or function `F` that maps an input vector `x` to an output vector `y`, (i.e. `y = F(x, t)`).
@@ -9,14 +9,14 @@ use num_traits::{One, Signed, Zero};
 // The Jacobian is defined by the [Self::jac_mul_inplace] method, which computes the product of the Jacobian with a given vector `J(x, t) * v`.
 pub trait NonLinearOp: Op {
     /// Compute the operator `F(x, t)` at a given state and time.
-    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V);
+    fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult;
 
     /// Compute the operator `F(x, t)` at a given state and time, and return the result.
     /// Use `[Self::call_inplace]` to for a non-allocating version.
-    fn call(&self, x: &Self::V, t: Self::T) -> Self::V {
+    fn call(&self, x: &Self::V, t: Self::T) -> OperatorResult<Self::V> {
         let mut y = Self::V::zeros(self.nout(), self.context().clone());
-        self.call_inplace(x, t, &mut y);
-        y
+        self.call_inplace(x, t, &mut y)?;
+        Ok(y)
     }
 }
 
@@ -25,23 +25,24 @@ pub trait NonLinearOpTimePartial: NonLinearOp {
     ///
     /// The default implementation estimates the derivative using a central finite difference
     /// at the supplied state and time.
-    fn time_derive_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+    fn time_derive_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
         let eps_sqrt = Self::T::EPSILON.sqrt();
         let h = (Self::T::one() + t.abs()) * eps_sqrt;
         let mut y_plus = Self::V::zeros(self.nout(), self.context().clone());
         let mut y_minus = Self::V::zeros(self.nout(), self.context().clone());
-        self.call_inplace(x, t + h, &mut y_plus);
-        self.call_inplace(x, t - h, &mut y_minus);
+        self.call_inplace(x, t + h, &mut y_plus)?;
+        self.call_inplace(x, t - h, &mut y_minus)?;
         y.copy_from(&y_plus);
         *y -= &y_minus;
         *y *= scale(Self::T::one() / (h + h));
+        Ok(())
     }
 
     /// Compute the partial time derivative `∂F/∂t(x, t)` and return it.
-    fn time_derive(&self, x: &Self::V, t: Self::T) -> Self::V {
+    fn time_derive(&self, x: &Self::V, t: Self::T) -> OperatorResult<Self::V> {
         let mut y = Self::V::zeros(self.nout(), self.context().clone());
-        self.time_derive_inplace(x, t, &mut y);
-        y
+        self.time_derive_inplace(x, t, &mut y)?;
+        Ok(y)
     }
 }
 
@@ -174,24 +175,30 @@ pub trait NonLinearOpAdjoint: NonLinearOp {
 }
 pub trait NonLinearOpJacobian: NonLinearOp {
     /// Compute the product of the Jacobian with a given vector `J(x, t) * v`.
-    fn jac_mul_inplace(&self, x: &Self::V, t: Self::T, v: &Self::V, y: &mut Self::V);
+    fn jac_mul_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        v: &Self::V,
+        y: &mut Self::V,
+    ) -> OperatorResult;
 
     /// Compute the product of the Jacobian with a given vector `J(x, t) * v`, and return the result.
     /// Use `[Self::jac_mul_inplace]` to for a non-allocating version.
-    fn jac_mul(&self, x: &Self::V, t: Self::T, v: &Self::V) -> Self::V {
+    fn jac_mul(&self, x: &Self::V, t: Self::T, v: &Self::V) -> OperatorResult<Self::V> {
         let mut y = Self::V::zeros(self.nstates(), self.context().clone());
-        self.jac_mul_inplace(x, t, v, &mut y);
-        y
+        self.jac_mul_inplace(x, t, v, &mut y)?;
+        Ok(y)
     }
 
     /// Compute the Jacobian matrix `J(x, t)` of the operator and return it.
     /// See [Self::jacobian_inplace] for a non-allocating version.
-    fn jacobian(&self, x: &Self::V, t: Self::T) -> Self::M {
+    fn jacobian(&self, x: &Self::V, t: Self::T) -> OperatorResult<Self::M> {
         let n = self.nstates();
         let mut y =
             Self::M::new_from_sparsity(n, n, self.jacobian_sparsity(), self.context().clone());
-        self.jacobian_inplace(x, t, &mut y);
-        y
+        self.jacobian_inplace(x, t, &mut y)?;
+        Ok(y)
     }
 
     /// Return sparsity information (if available)
@@ -203,20 +210,26 @@ pub trait NonLinearOpJacobian: NonLinearOp {
     /// `y` should have been previously initialised using the output of [Self::jacobian_sparsity].
     /// The default implementation of this method computes the Jacobian using [Self::jac_mul_inplace],
     /// but it can be overriden for more efficient implementations.
-    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
-        self._default_jacobian_inplace(x, t, y);
+    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
+        self._default_jacobian_inplace(x, t, y)
     }
 
     /// Default implementation of the Jacobian computation (this is the default for [Self::jacobian_inplace]).
-    fn _default_jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn _default_jacobian_inplace(
+        &self,
+        x: &Self::V,
+        t: Self::T,
+        y: &mut Self::M,
+    ) -> OperatorResult {
         let mut v = Self::V::zeros(self.nstates(), self.context().clone());
         let mut col = Self::V::zeros(self.nout(), self.context().clone());
         for j in 0..self.nstates() {
             v.set_index(j, Self::T::one());
-            self.jac_mul_inplace(x, t, &v, &mut col);
+            self.jac_mul_inplace(x, t, &v, &mut col)?;
             y.set_column(j, &col);
             v.set_index(j, Self::T::zero());
         }
+        Ok(())
     }
 }
 
@@ -225,7 +238,7 @@ mod tests {
     use crate::{
         context::nalgebra::NalgebraContext, matrix::dense_nalgebra_serial::NalgebraMat,
         DenseMatrix, NonLinearOp, NonLinearOpAdjoint, NonLinearOpJacobian, NonLinearOpSens,
-        NonLinearOpSensAdjoint, NonLinearOpTimePartial, Op, Vector,
+        NonLinearOpSensAdjoint, NonLinearOpTimePartial, Op, OperatorResult, Vector,
     };
 
     type M = NalgebraMat<f64>;
@@ -259,7 +272,7 @@ mod tests {
     }
 
     impl NonLinearOp for FakeNonLinearOp {
-        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) {
+        fn call_inplace(&self, x: &Self::V, _t: Self::T, y: &mut Self::V) -> OperatorResult {
             y.copy_from(&Self::V::from_vec(
                 vec![
                     2.0 * x.get_index(0) + 3.0 * x.get_index(1),
@@ -267,6 +280,7 @@ mod tests {
                 ],
                 NalgebraContext::default(),
             ));
+            Ok(())
         }
     }
 
@@ -291,7 +305,7 @@ mod tests {
     }
 
     impl NonLinearOp for TimeDependentFakeNonLinearOp {
-        fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) {
+        fn call_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::V) -> OperatorResult {
             y.copy_from(&Self::V::from_vec(
                 vec![
                     2.0 * x.get_index(0) + t,
@@ -299,11 +313,18 @@ mod tests {
                 ],
                 NalgebraContext::default(),
             ));
+            Ok(())
         }
     }
 
     impl NonLinearOpJacobian for FakeNonLinearOp {
-        fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, v: &Self::V, y: &mut Self::V) {
+        fn jac_mul_inplace(
+            &self,
+            _x: &Self::V,
+            _t: Self::T,
+            v: &Self::V,
+            y: &mut Self::V,
+        ) -> OperatorResult {
             y.copy_from(&Self::V::from_vec(
                 vec![
                     2.0 * v.get_index(0) + 3.0 * v.get_index(1),
@@ -311,6 +332,7 @@ mod tests {
                 ],
                 NalgebraContext::default(),
             ));
+            Ok(())
         }
     }
 
@@ -370,11 +392,11 @@ mod tests {
         let x = crate::NalgebraVec::from_vec(vec![1.0, 2.0], NalgebraContext::default());
         let v = crate::NalgebraVec::from_vec(vec![3.0, -1.0], NalgebraContext::default());
 
-        op.call(&x, 0.0).assert_eq_st(
+        op.call(&x, 0.0).unwrap().assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![8.0, 7.0], NalgebraContext::default()),
             1e-12,
         );
-        op.jac_mul(&x, 0.0, &v).assert_eq_st(
+        op.jac_mul(&x, 0.0, &v).unwrap().assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![3.0, -7.0], NalgebraContext::default()),
             1e-12,
         );
@@ -383,7 +405,7 @@ mod tests {
             1e-12,
         );
 
-        let jac = op.jacobian(&x, 0.0);
+        let jac = op.jacobian(&x, 0.0).unwrap();
         assert_eq!(jac.get_index(0, 0), 2.0);
         assert_eq!(jac.get_index(1, 0), -1.0);
         assert_eq!(jac.get_index(0, 1), 3.0);
@@ -415,13 +437,13 @@ mod tests {
         };
         let x = crate::NalgebraVec::from_vec(vec![1.0, 2.0], NalgebraContext::default());
 
-        op.time_derive(&x, 0.5).assert_eq_st(
+        op.time_derive(&x, 0.5).unwrap().assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![1.0, -3.0], NalgebraContext::default()),
             1e-8,
         );
 
         let mut y = crate::NalgebraVec::zeros(2, NalgebraContext::default());
-        op.time_derive_inplace(&x, 0.5, &mut y);
+        op.time_derive_inplace(&x, 0.5, &mut y).unwrap();
         y.assert_eq_st(
             &crate::NalgebraVec::from_vec(vec![1.0, -3.0], NalgebraContext::default()),
             1e-8,

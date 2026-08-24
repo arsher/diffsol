@@ -190,7 +190,7 @@ where
             .matrix
             .as_mut()
             .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
-        op.matrix_inplace(matrix);
+        op.matrix_inplace(matrix)?;
         let col_ptrs = matrix.column_pointers() as *mut KluIndextype;
         let row_indices = matrix.row_indices() as *mut KluIndextype;
         let symbolic = self

@@ -62,7 +62,7 @@ impl PyDiffsol {
             }
             let y = solver.interpolate(t)?;
             let out = if let Some(out) = problem.eqn.out() {
-                out.call(&y, t)
+                out.call(&y, t).map_err(DiffsolError::from)?
             } else {
                 y
             };

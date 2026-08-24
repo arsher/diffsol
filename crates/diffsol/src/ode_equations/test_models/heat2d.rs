@@ -28,8 +28,8 @@ pub fn heat2d_diffsl_problem<
     use crate::VectorHost;
     let (problem, _soln) = head2d_problem::<M, MGRID>();
     let u0 = problem.eqn.init().call(0.0);
-    let jac = problem.eqn.rhs().jacobian(&u0, 0.0);
-    let mass = problem.eqn.mass().unwrap().matrix(0.0);
+    let jac = problem.eqn.rhs().jacobian(&u0, 0.0).unwrap();
+    let mass = problem.eqn.mass().unwrap().matrix(0.0).unwrap();
     let init = problem.eqn.init().call(0.0);
     let init_diffsl = init
         .as_slice()
@@ -317,14 +317,14 @@ mod tests {
         //let jac = heat2d_jacobian::<nalgebra::DMatrix<f64>, 10>();
         let (problem, _soln) = head2d_problem::<NalgebraMat<f64>, 10>();
         let u0 = problem.eqn.init().call(0.0);
-        let jac = problem.eqn.rhs().jacobian(&u0, 0.0);
+        let jac = problem.eqn.rhs().jacobian(&u0, 0.0).unwrap();
         insta::assert_yaml_snapshot!(jac.inner().to_string());
     }
 
     #[test]
     fn test_mass() {
         let (problem, _soln) = head2d_problem::<NalgebraMat<f64>, 10>();
-        let mass = problem.eqn.mass().unwrap().matrix(0.0);
+        let mass = problem.eqn.mass().unwrap().matrix(0.0).unwrap();
         insta::assert_yaml_snapshot!(mass.inner().to_string());
     }
 
@@ -343,7 +343,12 @@ mod tests {
             *problem.context(),
         );
         let mut y = FaerVec::zeros(25, *problem.context());
-        problem.eqn.mass().unwrap().call_inplace(&u, 0.0, &mut y);
+        problem
+            .eqn
+            .mass()
+            .unwrap()
+            .call_inplace(&u, 0.0, &mut y)
+            .unwrap();
         let expect = FaerVec::from_vec(
             vec![
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.0, 8.0, 9.0, 0.0, 0.0, 12.0, 13.0, 14.0, 0.0, 0.0,

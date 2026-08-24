@@ -104,7 +104,7 @@ impl<V: DefaultDenseMatrix> Solution<V> {
                         &mut self.ys,
                         col,
                         &mut self.tmp_nout,
-                    );
+                    )?;
                     self.ts[col] = state.t;
                     col + 1
                 }
@@ -143,7 +143,7 @@ impl<V: DefaultDenseMatrix> Solution<V> {
                         &mut self.ys,
                         col,
                         &mut self.tmp_nout,
-                    );
+                    )?;
                     crate::ode_solver::sensitivities::write_state_sens_out(
                         problem,
                         &state,
@@ -151,7 +151,7 @@ impl<V: DefaultDenseMatrix> Solution<V> {
                         col,
                         &mut self.tmp_nout,
                         &mut self.tmp_nparams,
-                    );
+                    )?;
                     self.ts[col] = state.t;
                     col + 1
                 }

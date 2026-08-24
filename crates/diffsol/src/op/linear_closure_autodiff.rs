@@ -1,6 +1,6 @@
 use std::{cell::RefCell, marker::PhantomData};
 
-use crate::{LinearOp, LinearOpTranspose, Matrix, Op, Vector};
+use crate::{LinearOp, LinearOpTranspose, Matrix, Op, OperatorResult, Vector};
 use num_traits::{One, Zero};
 
 use super::{BuilderOp, OpStatistics, ParameterisedOp};
@@ -69,7 +69,14 @@ impl<M: Matrix, F> Op for LinearClosureAutodiff<M, F> {
 }
 
 impl<M: Matrix, F> BuilderOp for LinearClosureAutodiff<M, F> {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, _t0: Self::T, _p: &Self::V) {}
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        _t0: Self::T,
+        _p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        Ok(())
+    }
 
     fn set_nstates(&mut self, nstates: usize) {
         self.nstates = nstates;
@@ -103,16 +110,23 @@ mod autodiff_impl {
     impl<M: Matrix, F: Fn(&M::V, &M::V, M::T, M::T, &mut M::V)> LinearOp
         for ParameterisedOp<'_, LinearClosureAutodiff<M, F>>
     {
-        fn gemv_inplace(&self, x: &M::V, t: M::T, beta: M::T, y: &mut M::V) {
+        fn gemv_inplace(&self, x: &M::V, t: M::T, beta: M::T, y: &mut M::V) -> OperatorResult {
             self.op.statistics.borrow_mut().increment_call();
             self.op.call_func(x, self.p, t, beta, y);
+            Ok(())
         }
     }
 
     impl<M: Matrix, F: Fn(&M::V, &M::V, M::T, M::T, &mut M::V)> LinearOpTranspose
         for ParameterisedOp<'_, LinearClosureAutodiff<M, F>>
     {
-        fn gemv_transpose_inplace(&self, x: &M::V, t: M::T, beta: M::T, y: &mut M::V) {
+        fn gemv_transpose_inplace(
+            &self,
+            x: &M::V,
+            t: M::T,
+            beta: M::T,
+            y: &mut M::V,
+        ) -> OperatorResult {
             let tmp_input = self.op.tmp_input.borrow();
             let mut tmp_output = self.op.tmp_output.borrow_mut();
             let mut tmp_input_adjoint = self.op.tmp_input_adjoint.borrow_mut();
@@ -130,6 +144,7 @@ mod autodiff_impl {
                 &mut tmp_output_adjoint,
             );
             y.axpy(M::T::one(), &tmp_input_adjoint, beta);
+            Ok(())
         }
     }
 }
@@ -163,11 +178,12 @@ mod tests {
         let x = V::from_vec(vec![5.0, 7.0], ctx);
 
         let mut y = V::from_vec(vec![11.0, 13.0], ctx);
-        pop.gemv_inplace(&x, 0.0, 0.5, &mut y);
+        pop.gemv_inplace(&x, 0.0, 0.5, &mut y).unwrap();
         y.assert_eq_st(&V::from_vec(vec![39.5, 56.5], ctx), 1e-12);
 
         let mut y_transpose = V::from_vec(vec![11.0, 13.0], ctx);
-        pop.gemv_transpose_inplace(&x, 0.0, 0.5, &mut y_transpose);
+        pop.gemv_transpose_inplace(&x, 0.0, 0.5, &mut y_transpose)
+            .unwrap();
         y_transpose.assert_eq_st(&V::from_vec(vec![46.5, 51.5], ctx), 1e-12);
     }
 }

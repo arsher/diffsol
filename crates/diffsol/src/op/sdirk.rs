@@ -1,6 +1,6 @@
 use crate::{
-    scale, DenseMatrix, LinearOp, Matrix, MatrixSparsity, NonLinearOpJacobian, OdeEquations,
-    OdeEquationsImplicit, Vector,
+    matrix::MatrixView, scale, DenseMatrix, LinearOp, Matrix, MatrixSparsity,
+    NonLinearOpJacobian, OdeEquations, OdeEquationsImplicit, OperatorResult, Vector,
 };
 use log::{debug, trace};
 use num_traits::ToPrimitive;
@@ -42,25 +42,26 @@ impl<Eqn: OdeEquationsImplicit> SdirkCallable<Eqn> {
         }
     }
     //  y = h * g(phi + c * y_s)
-    pub fn integrate_out(&self, ys: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) {
-        self.eqn.out().unwrap().call_inplace(ys, t, y);
+    pub fn integrate_out(&self, ys: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) -> OperatorResult {
+        self.eqn.out().unwrap().call_inplace(ys, t, y)?;
         y.mul_assign(scale(*self.h.borrow().deref()));
+        Ok(())
     }
-    pub fn rhs_jac(&self, x: &Eqn::V, t: Eqn::T) -> Ref<'_, Eqn::M> {
+    pub fn rhs_jac(&self, x: &Eqn::V, t: Eqn::T) -> OperatorResult<Ref<'_, Eqn::M>> {
         {
             let mut rhs_jac = self.rhs_jac.borrow_mut();
             self.set_tmp(x);
             let tmp = self.tmp.borrow();
-            self.eqn.rhs().jacobian_inplace(&tmp, t, &mut rhs_jac);
+            self.eqn.rhs().jacobian_inplace(&tmp, t, &mut rhs_jac)?;
         }
-        self.rhs_jac.borrow()
+        Ok(self.rhs_jac.borrow())
     }
-    pub fn mass(&self, t: Eqn::T) -> Ref<'_, Eqn::M> {
+    pub fn mass(&self, t: Eqn::T) -> OperatorResult<Ref<'_, Eqn::M>> {
         {
             let mut mass_jac = self.mass_jac.borrow_mut();
-            self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac);
+            self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac)?;
         }
-        self.mass_jac.borrow()
+        Ok(self.mass_jac.borrow())
     }
     pub fn current_mass(&self) -> Ref<'_, Eqn::M> {
         self.mass_jac.borrow()
@@ -234,42 +235,44 @@ impl<Eqn: OdeEquations> Op for SdirkCallable<Eqn> {
 
 impl<Eqn: OdeEquationsImplicit> NonLinearOp for SdirkCallable<Eqn> {
     // F(y) = M (y) - h * f(phi + c * y) = 0
-    fn call_inplace(&self, x: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) {
+    fn call_inplace(&self, x: &Eqn::V, t: Eqn::T, y: &mut Eqn::V) -> OperatorResult {
         self.set_tmp(x);
         let tmp = self.tmp.borrow();
 
-        self.eqn.rhs().call_inplace(&tmp, t, y);
+        self.eqn.rhs().call_inplace(&tmp, t, y)?;
 
         // y = Mx - h y
         let beta = -*self.h.borrow().deref();
         if let Some(mass) = self.eqn.mass() {
-            mass.gemv_inplace(x, t, beta, y);
+            mass.gemv_inplace(x, t, beta, y)?;
         } else {
             y.axpy(Eqn::T::one(), x, beta);
         }
+        Ok(())
     }
 }
 
 impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for SdirkCallable<Eqn> {
     // (M - c * h * f'(phi + c * y)) v
-    fn jac_mul_inplace(&self, x: &Eqn::V, t: Eqn::T, v: &Eqn::V, y: &mut Eqn::V) {
+    fn jac_mul_inplace(&self, x: &Eqn::V, t: Eqn::T, v: &Eqn::V, y: &mut Eqn::V) -> OperatorResult {
         self.set_tmp(x);
         let tmp = self.tmp.borrow();
         let h = *self.h.borrow().deref();
         let c = self.c;
 
-        self.eqn.rhs().jac_mul_inplace(&tmp, t, v, y);
+        self.eqn.rhs().jac_mul_inplace(&tmp, t, v, y)?;
 
         // y = Mv - c h y
         if let Some(mass) = self.eqn.mass() {
-            mass.gemv_inplace(v, t, -c * h, y);
+            mass.gemv_inplace(v, t, -c * h, y)?;
         } else {
             y.axpy(Eqn::T::one(), v, -c * h);
         }
+        Ok(())
     }
 
     // M - c * h * f'(phi + c * y)
-    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
         let c = self.c;
         let h = *self.h.borrow().deref();
         if *self.jacobian_is_stale.borrow() {
@@ -278,14 +281,14 @@ impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for SdirkCallable<Eqn> {
             let mut rhs_jac = self.rhs_jac.borrow_mut();
             self.set_tmp(x);
             let tmp = self.tmp.borrow();
-            self.eqn.rhs().jacobian_inplace(&tmp, t, &mut rhs_jac);
+            self.eqn.rhs().jacobian_inplace(&tmp, t, &mut rhs_jac)?;
 
             if self.eqn.mass().is_none() {
                 let mass_jac = self.mass_jac.borrow();
                 y.scale_add_and_assign(mass_jac.deref(), -(c * h), rhs_jac.deref());
             } else {
                 let mut mass_jac = self.mass_jac.borrow_mut();
-                self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac);
+                self.eqn.mass().unwrap().matrix_inplace(t, &mut mass_jac)?;
                 y.scale_add_and_assign(mass_jac.deref(), -(c * h), rhs_jac.deref());
             }
             self.jacobian_is_stale.replace(false);
@@ -299,6 +302,7 @@ impl<Eqn: OdeEquationsImplicit> NonLinearOpJacobian for SdirkCallable<Eqn> {
             );
             y.scale_add_and_assign(mass_jac.deref(), -(c * h), rhs_jac.deref());
         }
+        Ok(())
     }
     fn jacobian_sparsity(&self) -> Option<<Self::M as Matrix>::Sparsity> {
         self.sparsity.clone()
@@ -332,8 +336,8 @@ mod tests {
             let t = 0.9;
             let y = Vcpu::from_vec(vec![1.1, 1.2, 1.3], *ctx);
             let v = Vcpu::from_vec(vec![2.0, 3.0, 4.0], *ctx);
-            let jac = sdirk_callable.jacobian(&y, t);
-            let jac_mul_v = sdirk_callable.jac_mul(&y, t, &v);
+            let jac = sdirk_callable.jacobian(&y, t).unwrap();
+            let jac_mul_v = sdirk_callable.jac_mul(&y, t, &v).unwrap();
             let mut jac_mul_v2 = Vcpu::from_vec(vec![0.0, 0.0, 0.0], *ctx);
             jac.gemv(1.0, &v, 0.0, &mut jac_mul_v2);
             jac_mul_v.assert_eq_st(&jac_mul_v2, 1e-10);
@@ -366,7 +370,7 @@ mod tests {
         //                       |-0.1 * (1.2 + 0.1 * 1)| = |-0.13|
         //  i.e. F(y) = |1 0| |1| - |-0.12| =  |1.12|
         //              |0 1| |1|   |-0.13|    |1.13|
-        sdirk_callable.call_inplace(&y, t, &mut y_out);
+        sdirk_callable.call_inplace(&y, t, &mut y_out).unwrap();
         let y_out_expect = Vcpu::from_vec(vec![1.12, 1.13], *ctx);
         y_out.assert_eq_st(&y_out_expect, 1e-10);
 
@@ -375,18 +379,20 @@ mod tests {
         //                    |-0.1| = |-0.1|
         // Mv - c * h * f'(phi + c * y) v = |1 0| |1| - 0.1 * |-0.1| = |1.01|
         //                                  |0 1| |1|         |-0.1|   |1.01|
-        sdirk_callable.jac_mul_inplace(&y, t, &v, &mut y_out);
+        sdirk_callable
+            .jac_mul_inplace(&y, t, &v, &mut y_out)
+            .unwrap();
         let y_out_expect = Vcpu::from_vec(vec![1.01, 1.01], *ctx);
         y_out.assert_eq_st(&y_out_expect, 1e-10);
 
         // J = M - c * h * f'(phi + c * y) = |1 0| - 0.1 * |-0.1 0| = |1.01 0|
         //                                   |0 1|         |0 -0.1|   |0 1.01|
-        let mut jac = sdirk_callable.jacobian(&y, t);
+        let mut jac = sdirk_callable.jacobian(&y, t).unwrap();
         assert_eq!(jac.get_index(0, 0), 1.01);
         assert_eq!(jac.get_index(0, 1), 0.0);
         assert_eq!(jac.get_index(1, 0), 0.0);
         assert_eq!(jac.get_index(1, 1), 1.01);
-        sdirk_callable.jacobian_inplace(&y, t, &mut jac);
+        sdirk_callable.jacobian_inplace(&y, t, &mut jac).unwrap();
         assert_eq!(jac.get_index(0, 0), 1.01);
         assert_eq!(jac.get_index(0, 1), 0.0);
         assert_eq!(jac.get_index(1, 0), 0.0);

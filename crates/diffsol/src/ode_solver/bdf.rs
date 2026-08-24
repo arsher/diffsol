@@ -12,10 +12,10 @@ use num_traits::{abs, FromPrimitive, One, Signed, ToPrimitive, Zero};
 use crate::ode_solver_error;
 use crate::{
     matrix::MatrixRef, nonlinear_solver::root::RootFinder, op::bdf::BdfCallable, scalar::scale,
-    AugmentedOdeEquations, BdfState, DenseMatrix, JacobianUpdate, NonLinearOp, NonLinearSolver,
-    OdeEquationsImplicit, OdeEquationsImplicitAdjoint, OdeEquationsImplicitSens, OdeSolverMethod,
-    OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op, Scalar, SensEquations, Vector,
-    VectorRef, VectorView,
+    AugmentedOdeEquations, BdfState, DenseMatrix, JacobianUpdate, MatrixViewMut, NonLinearOp,
+    NonLinearSolver, OdeEquationsImplicit, OdeEquationsImplicitAdjoint, OdeEquationsImplicitSens,
+    OdeSolverMethod, OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op, OperatorErrorKind,
+    Scalar, SensEquations, Vector, VectorRef, VectorView, VectorViewMut,
 };
 
 use super::adjoint::AdjointOdeSolverMethod;
@@ -310,12 +310,14 @@ where
 
         let ctx = problem.eqn.context();
         let root_finder = if integrate_main_eqn {
-            problem.eqn.root().map(|root_fn| {
+            if let Some(root_fn) = problem.eqn.root() {
                 let root_finder =
                     RootFinder::new(root_fn.nout(), problem.eqn.nstates(), ctx.clone());
-                root_finder.init(&root_fn, &state.y, state.t);
-                root_finder
-            })
+                root_finder.init(&root_fn, &state.y, state.t)?;
+                Some(root_finder)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -571,11 +573,11 @@ where
         diff.mul_cols_by(order + 1, ru.as_slice());
     }
 
-    fn calculate_output_delta(&mut self) {
+    fn calculate_output_delta(&mut self) -> Result<(), DiffsolError> {
         // integrate output function
         let state = &mut self.state;
         let out = self.ode_problem.eqn.out().unwrap();
-        out.call_inplace(&self.y_predict, self.t_predict, &mut state.dg);
+        out.call_inplace(&self.y_predict, self.t_predict, &mut state.dg)?;
         self.op.as_ref().unwrap().integrate_out(
             &state.dg,
             &state.gdiff,
@@ -584,15 +586,16 @@ where
             state.order,
             &mut self.g_delta,
         );
+        Ok(())
     }
 
-    fn calculate_sens_output_delta(&mut self, i: usize) {
+    fn calculate_sens_output_delta(&mut self, i: usize) -> Result<(), DiffsolError> {
         let state = &mut self.state;
         let s_op = self.s_op.as_ref().unwrap();
 
         // integrate sensitivity output equations
         let out = s_op.eqn().out().unwrap();
-        out.call_inplace(&state.s[i], self.t_predict, &mut state.dsg[i]);
+        out.call_inplace(&state.s[i], self.t_predict, &mut state.dsg[i])?;
 
         s_op.integrate_out(
             &state.dsg[i],
@@ -602,6 +605,7 @@ where
             state.order,
             &mut self.sg_deltas[i],
         );
+        Ok(())
     }
 
     fn update_differences_and_integrate_out(&mut self) {
@@ -1001,7 +1005,7 @@ where
             }
 
             if s_op.eqn().out().is_some() {
-                self.calculate_sens_output_delta(i);
+                self.calculate_sens_output_delta(i)?;
             }
         }
         Ok(())
@@ -1048,23 +1052,29 @@ where
             .apply_reset_with_sens_mass::<LS, _>(problem, root_idx)
     }
 
-    fn jacobian(&self) -> Option<Ref<'_, <Eqn>::M>> {
+    fn jacobian(&self) -> Result<Option<Ref<'_, <Eqn>::M>>, DiffsolError> {
         let t = self.state.t;
         if let Some(op) = self.op.as_ref() {
             let x = &self.state.y;
-            Some(op.rhs_jac(x, t))
+            Ok(Some(op.rhs_jac(x, t)?))
         } else {
             let x = &self.state.s[0];
-            self.s_op.as_ref().map(|s_op| s_op.rhs_jac(x, t))
+            self.s_op
+                .as_ref()
+                .map(|s_op| s_op.rhs_jac(x, t).map_err(Into::into))
+                .transpose()
         }
     }
 
-    fn mass(&self) -> Option<Ref<'_, <Eqn>::M>> {
+    fn mass(&self) -> Result<Option<Ref<'_, <Eqn>::M>>, DiffsolError> {
         let t = self.state.t;
         if let Some(op) = self.op.as_ref() {
-            Some(op.mass(t))
+            Ok(Some(op.mass(t)?))
         } else {
-            self.s_op.as_ref().map(|s_op| s_op.mass(t))
+            self.s_op
+                .as_ref()
+                .map(|s_op| s_op.mass(t).map_err(Into::into))
+                .transpose()
         }
     }
 
@@ -1296,6 +1306,7 @@ where
         let old_num_error_test_failures = self.statistics.number_of_error_test_failures;
 
         let mut convergence_fail = false;
+        let mut last_recoverable_error = None;
 
         if self.is_state_modified {
             // reinitalise root finder if needed
@@ -1303,7 +1314,7 @@ where
                 (problem.eqn.root(), self.root_finder.as_ref())
             {
                 let state = &self.state;
-                root_finder.init(&root_fn, &state.y, state.t);
+                root_finder.init(&root_fn, &state.y, state.t)?;
             }
             // reinitialise diff matrix
             self.initialise_to_first_order();
@@ -1370,38 +1381,52 @@ where
 
                     // deal with output equations
                     if integrate_out {
-                        self.calculate_output_delta();
+                        self.calculate_output_delta()?;
                     }
                 }
             }
 
             // only calculate sensitivities if solve was successful
-            if solve_result.is_ok()
-                && integrate_sens
-                && self.sensitivity_solve(self.t_predict).is_err()
-            {
-                solve_result = Err(ode_solver_error!(SensitivitySolveFailed));
+            if solve_result.is_ok() && integrate_sens {
+                if let Err(error) = self.sensitivity_solve(self.t_predict) {
+                    solve_result = if error.operator_error().is_some() {
+                        Err(error)
+                    } else {
+                        Err(ode_solver_error!(SensitivitySolveFailed))
+                    };
+                }
             }
 
             // handle case where either nonlinear solve failed
-            if solve_result.is_err() {
+            if let Err(error) = solve_result {
+                match error.operator_error().map(|error| error.kind()) {
+                    Some(OperatorErrorKind::Fatal) => return Err(error),
+                    Some(OperatorErrorKind::Recoverable) => {
+                        last_recoverable_error = Some(error.clone());
+                    }
+                    None => {}
+                }
                 self.statistics.number_of_nonlinear_solver_fails += 1;
                 if self.statistics.number_of_nonlinear_solver_fails
                     > self.config.maximum_newton_fails
                 {
-                    return Err(DiffsolError::from(
-                        OdeSolverError::TooManyNonlinearSolverFailures {
+                    return Err(last_recoverable_error.unwrap_or_else(|| {
+                        DiffsolError::from(OdeSolverError::TooManyNonlinearSolverFailures {
                             time: self.state.t.to_f64().unwrap(),
                             num_failures: self.statistics.number_of_nonlinear_solver_fails,
-                        },
-                    ));
+                        })
+                    }));
                 }
                 if convergence_fail {
                     // newton iteration did not converge, but jacobian has already been
                     // evaluated so reduce step size by 0.3 (as per [1]) and try again
                     self.prev_error_norm = None;
-                    let new_h =
-                        self._update_step_size(<Eqn::T as FromPrimitive>::from_f64(0.3).unwrap())?;
+                    let new_h = match self
+                        ._update_step_size(<Eqn::T as FromPrimitive>::from_f64(0.3).unwrap())
+                    {
+                        Ok(new_h) => new_h,
+                        Err(error) => return Err(last_recoverable_error.unwrap_or(error)),
+                    };
                     debug!(
                         "Second convergence failure, reducing step size to {:.3e} and trying again",
                         new_h.to_f64().unwrap()
@@ -1590,7 +1615,7 @@ where
                 &root_fn,
                 self.state.as_ref().y,
                 self.state.as_ref().t,
-            );
+            )?;
             if let Some((root, root_idx)) = ret {
                 debug!("Root found at time {}", root);
                 return Ok(OdeSolverStopReason::RootFound(root, root_idx));
@@ -1620,6 +1645,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::{cell::Cell, rc::Rc};
+
     #[cfg(feature = "cuda")]
     use crate::ode_equations::test_models::{
         exponential_decay::{
@@ -1667,12 +1694,157 @@ mod test {
         },
         scale, ConstantOp, Context, DenseMatrix, DiffsolError, FaerLU, FaerMat, FaerSparseLU,
         FaerSparseMat, MatrixCommon, NalgebraLU, OdeBuilder, OdeEquations, OdeSolverMethod,
-        OdeSolverStopReason, Op, Vector, VectorView,
+        OdeSolverStopReason, Op, OperatorError, OperatorErrorKind, Vector, VectorView,
     };
     use diffsol_la::{error::LaError, LinearSolver as LaLinearSolver};
+    use thiserror::Error;
 
     type M = NalgebraMat<f64>;
     type LS = NalgebraLU<f64>;
+
+    #[derive(Debug, Error)]
+    #[error("{message}")]
+    struct ModelCallbackError {
+        message: &'static str,
+        _not_send_or_sync: Rc<()>,
+    }
+
+    #[test]
+    fn bdf_retries_a_recoverable_rhs_error_and_completes_the_step() {
+        let calls = Rc::new(Cell::new(0));
+        let failures_remaining = Rc::new(Cell::new(0));
+        let calls_in_rhs = calls.clone();
+        let failures_in_rhs = failures_remaining.clone();
+        let problem = OdeBuilder::<M>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    calls_in_rhs.set(calls_in_rhs.get() + 1);
+                    if failures_in_rhs.get() > 0 {
+                        failures_in_rhs.set(failures_in_rhs.get() - 1);
+                        return Err(OperatorError::recoverable(ModelCallbackError {
+                            message: "temporary model-domain refusal",
+                            _not_send_or_sync: Rc::new(()),
+                        }));
+                    }
+                    y[0] = -x[0];
+                    Ok(())
+                },
+                |_x, _p, _t, v, y| {
+                    y[0] = -v[0];
+                    Ok(())
+                },
+            )
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut solver = problem.bdf::<LS>().unwrap();
+        let setup_calls = calls.get();
+        failures_remaining.set(1);
+
+        solver.step().unwrap();
+
+        assert!(calls.get() >= setup_calls + 2);
+    }
+
+    #[test]
+    fn bdf_returns_a_fatal_rhs_error_without_another_model_call() {
+        let calls = Rc::new(Cell::new(0));
+        let armed = Rc::new(Cell::new(false));
+        let calls_in_rhs = calls.clone();
+        let armed_in_rhs = armed.clone();
+        let problem = OdeBuilder::<M>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    calls_in_rhs.set(calls_in_rhs.get() + 1);
+                    if armed_in_rhs.get() {
+                        return Err(OperatorError::fatal(ModelCallbackError {
+                            message: "fatal component evaluation",
+                            _not_send_or_sync: Rc::new(()),
+                        }));
+                    }
+                    y[0] = -x[0];
+                    Ok(())
+                },
+                |_x, _p, _t, v, y| {
+                    y[0] = -v[0];
+                    Ok(())
+                },
+            )
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut solver = problem.bdf::<LS>().unwrap();
+        let setup_calls = calls.get();
+        armed.set(true);
+
+        let error = match solver.step() {
+            Ok(_) => panic!("fatal callback unexpectedly completed a BDF step"),
+            Err(error) => error,
+        };
+
+        let operator_error = error
+            .operator_error()
+            .unwrap_or_else(|| panic!("expected operator error, got {error:?}"));
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Fatal);
+        assert_eq!(
+            operator_error
+                .downcast_ref::<ModelCallbackError>()
+                .unwrap()
+                .message,
+            "fatal component evaluation"
+        );
+        assert_eq!(calls.get(), setup_calls + 1);
+    }
+
+    #[test]
+    fn bdf_returns_the_recoverable_rhs_error_when_retries_are_exhausted() {
+        let calls = Rc::new(Cell::new(0));
+        let armed = Rc::new(Cell::new(false));
+        let calls_in_rhs = calls.clone();
+        let armed_in_rhs = armed.clone();
+        let problem = OdeBuilder::<M>::new()
+            .rhs_implicit_fallible(
+                move |x, _p, _t, y| {
+                    calls_in_rhs.set(calls_in_rhs.get() + 1);
+                    if armed_in_rhs.get() {
+                        return Err(OperatorError::recoverable(ModelCallbackError {
+                            message: "persistent model-domain refusal",
+                            _not_send_or_sync: Rc::new(()),
+                        }));
+                    }
+                    y[0] = -x[0];
+                    Ok(())
+                },
+                |_x, _p, _t, v, y| {
+                    y[0] = -v[0];
+                    Ok(())
+                },
+            )
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut solver = problem.bdf::<LS>().unwrap();
+        let setup_calls = calls.get();
+        armed.set(true);
+
+        let error = match solver.step() {
+            Ok(_) => panic!("persistent callback refusal unexpectedly completed a BDF step"),
+            Err(error) => error,
+        };
+
+        let operator_error = error
+            .operator_error()
+            .unwrap_or_else(|| panic!("expected operator error, got {error:?}"));
+        assert_eq!(operator_error.kind(), OperatorErrorKind::Recoverable);
+        assert_eq!(
+            operator_error
+                .downcast_ref::<ModelCallbackError>()
+                .unwrap()
+                .message,
+            "persistent model-domain refusal"
+        );
+        assert!(calls.get() > setup_calls + 1);
+    }
 
     #[derive(Default)]
     struct FailingSetupLinearSolver;
@@ -2529,7 +2701,7 @@ mod test {
 
     #[test]
     fn test_bdf_faer_sparse_foodweb() {
-        let (problem, soln) = foodweb_problem::<FaerSparseMat<f64>, 10>();
+        let (problem, soln) = foodweb_problem::<FaerSparseMat<f64>, 10>().unwrap();
         let mut s = problem.bdf::<FaerSparseLU<f64>>().unwrap();
         test_ode_solver(&mut s, soln, None, false, false);
         insta::assert_yaml_snapshot!(s.get_statistics(), @"
@@ -2552,7 +2724,7 @@ mod test {
         use crate::ode_equations::test_models::foodweb;
         use diffsl::LlvmModule;
         let (problem, soln) =
-            foodweb::foodweb_diffsl_problem::<FaerSparseMat<f64>, LlvmModule, 10>();
+            foodweb::foodweb_diffsl_problem::<FaerSparseMat<f64>, LlvmModule, 10>().unwrap();
         let mut s = problem.bdf::<FaerSparseLU<f64>>().unwrap();
         test_ode_solver(&mut s, soln, None, false, false);
     }

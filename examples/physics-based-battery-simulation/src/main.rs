@@ -35,7 +35,8 @@ fn main() {
             .eqn
             .out()
             .unwrap()
-            .call(solver.state().y, solver.state().t);
+            .call(solver.state().y, solver.state().t)
+            .unwrap();
         v.push(out[0]);
         t.push(0.0);
 
@@ -63,7 +64,8 @@ fn main() {
                     .eqn
                     .out()
                     .unwrap()
-                    .call_inplace(&y, next_output_time, &mut out);
+                    .call_inplace(&y, next_output_time, &mut out)
+                    .unwrap();
                 v.push(out[0]);
                 t.push(next_output_time);
                 next_output_time += delta_t;

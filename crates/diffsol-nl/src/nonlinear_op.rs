@@ -1,4 +1,4 @@
-use diffsol_la::{Context, IndexType, Matrix, Scalar, Vector};
+use diffsol_la::{Context, IndexType, Matrix, OperatorResult, Scalar, Vector};
 
 /// A non-linear operator `F` for use with the [crate::NonLinearSolver] trait.
 ///
@@ -22,59 +22,60 @@ pub trait NonLinearOp {
     fn context(&self) -> &Self::C;
 
     /// Compute the operator `F(x)` and store it in `y`.
-    fn call_inplace(&self, x: &Self::V, y: &mut Self::V);
+    fn call_inplace(&self, x: &Self::V, y: &mut Self::V) -> OperatorResult;
 
     /// Compute the operator `F(x)` and return the result.
     /// Use [Self::call_inplace] for a non-allocating version.
-    fn call(&self, x: &Self::V) -> Self::V {
+    fn call(&self, x: &Self::V) -> OperatorResult<Self::V> {
         let mut y = Self::V::zeros(self.nout(), self.context().clone());
-        self.call_inplace(x, &mut y);
-        y
+        self.call_inplace(x, &mut y)?;
+        Ok(y)
     }
 }
 
 /// A non-linear operator that can also provide its Jacobian `J = dF/dx`.
 pub trait NonLinearOpJacobian: NonLinearOp {
     /// Compute the product of the Jacobian with a given vector `J(x) * v` and store it in `y`.
-    fn jac_mul_inplace(&self, x: &Self::V, v: &Self::V, y: &mut Self::V);
+    fn jac_mul_inplace(&self, x: &Self::V, v: &Self::V, y: &mut Self::V) -> OperatorResult;
 
     /// Compute the product of the Jacobian with a given vector `J(x) * v` and return the result.
     /// Use [Self::jac_mul_inplace] for a non-allocating version.
-    fn jac_mul(&self, x: &Self::V, v: &Self::V) -> Self::V {
+    fn jac_mul(&self, x: &Self::V, v: &Self::V) -> OperatorResult<Self::V> {
         let mut y = Self::V::zeros(self.nstates(), self.context().clone());
-        self.jac_mul_inplace(x, v, &mut y);
-        y
+        self.jac_mul_inplace(x, v, &mut y)?;
+        Ok(y)
     }
 
     /// Compute the Jacobian matrix `J(x)` of the operator and return it.
     /// See [Self::jacobian_inplace] for a non-allocating version.
-    fn jacobian(&self, x: &Self::V) -> Self::M {
+    fn jacobian(&self, x: &Self::V) -> OperatorResult<Self::M> {
         let n = self.nstates();
         let mut y =
             Self::M::new_from_sparsity(n, n, self.jacobian_sparsity(), self.context().clone());
-        self.jacobian_inplace(x, &mut y);
-        y
+        self.jacobian_inplace(x, &mut y)?;
+        Ok(y)
     }
 
     /// Compute the Jacobian matrix `J(x)` of the operator and store it in the matrix `y`.
     /// `y` should have been previously initialised using the output of [Self::jacobian_sparsity].
     /// The default implementation computes the Jacobian using [Self::jac_mul_inplace], but it
     /// can be overriden for more efficient implementations.
-    fn jacobian_inplace(&self, x: &Self::V, y: &mut Self::M) {
-        self._default_jacobian_inplace(x, y);
+    fn jacobian_inplace(&self, x: &Self::V, y: &mut Self::M) -> OperatorResult {
+        self._default_jacobian_inplace(x, y)
     }
 
     /// Default implementation of the Jacobian computation (this is the default for [Self::jacobian_inplace]).
-    fn _default_jacobian_inplace(&self, x: &Self::V, y: &mut Self::M) {
+    fn _default_jacobian_inplace(&self, x: &Self::V, y: &mut Self::M) -> OperatorResult {
         use num_traits::{One, Zero};
         let mut v = Self::V::zeros(self.nstates(), self.context().clone());
         let mut col = Self::V::zeros(self.nout(), self.context().clone());
         for j in 0..self.nstates() {
             v.set_index(j, Self::T::one());
-            self.jac_mul_inplace(x, &v, &mut col);
+            self.jac_mul_inplace(x, &v, &mut col)?;
             y.set_column(j, &col);
             v.set_index(j, Self::T::zero());
         }
+        Ok(())
     }
 
     /// The sparsity pattern of the operator's Jacobian, or `None` if dense.

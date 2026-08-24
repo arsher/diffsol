@@ -97,7 +97,7 @@ impl<V: Vector> StateRefMut<'_, V> {
             .eqn
             .mass()
             .unwrap()
-            .matrix(ode_problem.t0)
+            .matrix(ode_problem.t0)?
             .partition_indices_by_zero_diagonal();
         if algebraic_indices.is_empty() {
             return Ok(());
@@ -117,7 +117,7 @@ impl<V: Vector> StateRefMut<'_, V> {
             ode_problem.t0,
             self.y,
             algebraic_indices.clone(),
-        );
+        )?;
 
         debug!(
             "Found {} algebraic variables (zero diagonal in mass matrix) out of {} total states",
@@ -181,7 +181,7 @@ impl<V: Vector> StateRefMut<'_, V> {
             augmented_eqn.set_index(i);
             augmented_eqn
                 .rhs()
-                .call_inplace(&self.s[i], *self.t, &mut self.ds[i]);
+                .call_inplace(&self.s[i], *self.t, &mut self.ds[i])?;
         }
 
         if ode_problem.eqn.mass().is_none() {
@@ -198,7 +198,7 @@ impl<V: Vector> StateRefMut<'_, V> {
             .eqn
             .mass()
             .unwrap()
-            .matrix(ode_problem.t0)
+            .matrix(ode_problem.t0)?
             .partition_indices_by_zero_diagonal();
         if algebraic_indices.is_empty() {
             return Ok(());
@@ -211,7 +211,7 @@ impl<V: Vector> StateRefMut<'_, V> {
                 *self.t,
                 &self.s[i],
                 algebraic_indices.clone(),
-            );
+            )?;
             root_solver.set_problem(&f)?;
 
             let mut y = self.ds[i].clone();
@@ -261,10 +261,10 @@ impl<V: Vector> StateRefMut<'_, V> {
 
         let nstates = rhs.nstates();
         let mut y_out = V::zeros(nstates, rhs.context().clone());
-        reset.call_inplace(self.y, *self.t, &mut y_out);
+        reset.call_inplace(self.y, *self.t, &mut y_out)?;
         self.y.copy_from(&y_out);
 
-        rhs.call_inplace(self.y, *self.t, &mut y_out);
+        rhs.call_inplace(self.y, *self.t, &mut y_out)?;
         self.dy.copy_from(&y_out);
         Ok(())
     }
@@ -292,14 +292,14 @@ impl<V: Vector> StateRefMut<'_, V> {
 
         let nstates = rhs.nstates();
         let mut y_out = V::zeros(nstates, rhs.context().clone());
-        reset.call_inplace(self.y, *self.t, &mut y_out);
+        reset.call_inplace(self.y, *self.t, &mut y_out)?;
         self.y.copy_from(&y_out);
 
         if eqn.mass().is_some() {
             let mut root_solver = NewtonNonlinearSolver::new(LS::default(), NoLineSearch);
             self.set_consistent(problem, &mut root_solver)?;
         } else {
-            rhs.call_inplace(self.y, *self.t, &mut y_out);
+            rhs.call_inplace(self.y, *self.t, &mut y_out)?;
             self.dy.copy_from(&y_out);
         }
         Ok(())
@@ -345,19 +345,19 @@ impl<V: Vector> StateRefMut<'_, V> {
         let f_minus = self.dy.clone();
         let s_before = self.s.to_vec();
         let nparams = s_before.len();
-        let reset_t = reset_op.time_derive(&y_before, t);
-        let root_t = root_op.time_derive(&y_before, t);
+        let reset_t = reset_op.time_derive(&y_before, t)?;
+        let root_t = root_op.time_derive(&y_before, t)?;
 
         // Delegate reset of self.y and self.dy (no mass matrix path).
         self.apply_reset::<Eqn>(problem)?;
 
         let mut correction_dir = V::zeros(nstates, ctx.clone());
-        reset_op.jac_mul_inplace(&y_before, t, &f_minus, &mut correction_dir);
+        reset_op.jac_mul_inplace(&y_before, t, &f_minus, &mut correction_dir)?;
         correction_dir += &reset_t;
         correction_dir -= &*self.dy;
 
         let mut root_flow = V::zeros(nroots, ctx.clone());
-        root_op.jac_mul_inplace(&y_before, t, &f_minus, &mut root_flow);
+        root_op.jac_mul_inplace(&y_before, t, &f_minus, &mut root_flow)?;
         let denom_tol = V::T::from_f64(100.0).unwrap() * V::T::EPSILON;
         let nbatch_denom = root_flow.context().nbatch();
         for b in 0..nbatch_denom {
@@ -381,10 +381,10 @@ impl<V: Vector> StateRefMut<'_, V> {
         for (j, s_j_before) in s_before.iter().enumerate() {
             basis.set_index(j, V::T::one());
 
-            reset_op.jac_mul_inplace(&y_before, t, s_j_before, &mut reset_jac_s);
+            reset_op.jac_mul_inplace(&y_before, t, s_j_before, &mut reset_jac_s)?;
             reset_op.sens_mul_inplace(&y_before, t, &basis, &mut reset_sens);
 
-            root_op.jac_mul_inplace(&y_before, t, s_j_before, &mut root_jac_s);
+            root_op.jac_mul_inplace(&y_before, t, s_j_before, &mut root_jac_s)?;
             root_op.sens_mul_inplace(&y_before, t, &basis, &mut root_sens);
 
             let mut s_j_plus = reset_jac_s.clone();
@@ -451,19 +451,19 @@ impl<V: Vector> StateRefMut<'_, V> {
         let f_minus = self.dy.clone();
         let s_before = self.s.to_vec();
         let nparams = s_before.len();
-        let reset_t = reset_op.time_derive(&y_before, t);
-        let root_t = root_op.time_derive(&y_before, t);
+        let reset_t = reset_op.time_derive(&y_before, t)?;
+        let root_t = root_op.time_derive(&y_before, t)?;
 
         // Delegate reset of self.y and self.dy (including set_consistent for mass matrices).
         self.apply_reset_with_mass::<LS, Eqn>(problem)?;
 
         let mut correction_dir = V::zeros(nstates, ctx.clone());
-        reset_op.jac_mul_inplace(&y_before, t, &f_minus, &mut correction_dir);
+        reset_op.jac_mul_inplace(&y_before, t, &f_minus, &mut correction_dir)?;
         correction_dir += &reset_t;
         correction_dir -= &*self.dy;
 
         let mut root_flow = V::zeros(nroots, ctx.clone());
-        root_op.jac_mul_inplace(&y_before, t, &f_minus, &mut root_flow);
+        root_op.jac_mul_inplace(&y_before, t, &f_minus, &mut root_flow)?;
         let denom_tol = V::T::from_f64(100.0).unwrap() * V::T::EPSILON;
         let nbatch_denom = root_flow.context().nbatch();
         for b in 0..nbatch_denom {
@@ -487,10 +487,10 @@ impl<V: Vector> StateRefMut<'_, V> {
         for (j, s_j_before) in s_before.iter().enumerate() {
             basis.set_index(j, V::T::one());
 
-            reset_op.jac_mul_inplace(&y_before, t, s_j_before, &mut reset_jac_s);
+            reset_op.jac_mul_inplace(&y_before, t, s_j_before, &mut reset_jac_s)?;
             reset_op.sens_mul_inplace(&y_before, t, &basis, &mut reset_sens);
 
-            root_op.jac_mul_inplace(&y_before, t, s_j_before, &mut root_jac_s);
+            root_op.jac_mul_inplace(&y_before, t, s_j_before, &mut root_jac_s)?;
             root_op.sens_mul_inplace(&y_before, t, &basis, &mut root_sens);
 
             let mut s_j_plus = reset_jac_s.clone();
@@ -599,16 +599,16 @@ impl<V: Vector> StateRefMut<'_, V> {
         let nstates = y_minus.len();
         let nparams = eqn.rhs().nparams();
 
-        let reset_t = reset_op.time_derive(y_minus, t_event);
-        let root_t = root_op.time_derive(y_minus, t_event);
+        let reset_t = reset_op.time_derive(y_minus, t_event)?;
+        let root_t = root_op.time_derive(y_minus, t_event)?;
 
         let mut correction_dir = V::zeros(nstates, ctx.clone());
-        reset_op.jac_mul_inplace(y_minus, t_event, f_minus, &mut correction_dir);
+        reset_op.jac_mul_inplace(y_minus, t_event, f_minus, &mut correction_dir)?;
         correction_dir += reset_t;
         correction_dir -= f_plus;
 
         let mut root_flow = V::zeros(nroots, ctx.clone());
-        root_op.jac_mul_inplace(y_minus, t_event, f_minus, &mut root_flow);
+        root_op.jac_mul_inplace(y_minus, t_event, f_minus, &mut root_flow)?;
         let denom_tol = V::T::from_f64(100.0).unwrap() * V::T::EPSILON;
         let nbatch_denom = root_flow.context().nbatch();
         for b in 0..nbatch_denom {
@@ -625,8 +625,8 @@ impl<V: Vector> StateRefMut<'_, V> {
         let (l_minus, l_plus) = if integrate_out {
             if let Some(out_op) = eqn.out() {
                 (
-                    Some(out_op.call(y_minus, t_event)),
-                    Some(out_op.call(y_plus, t_event)),
+                    Some(out_op.call(y_minus, t_event)?),
+                    Some(out_op.call(y_plus, t_event)?),
                 )
             } else {
                 (None, None)
@@ -750,10 +750,10 @@ impl<V: Vector> StateRefMut<'_, V> {
         }
 
         let ctx = eqn.context().clone();
-        let out = out_op.call(forward.y, forward.t);
-        let root_t = root_op.time_derive(forward.y, forward.t);
+        let out = out_op.call(forward.y, forward.t)?;
+        let root_t = root_op.time_derive(forward.y, forward.t)?;
         let mut root_flow = V::zeros(nroots, ctx.clone());
-        root_op.jac_mul_inplace(forward.y, forward.t, forward.dy, &mut root_flow);
+        root_op.jac_mul_inplace(forward.y, forward.t, forward.dy, &mut root_flow)?;
         let denom_tol = V::T::from_f64(100.0).unwrap() * V::T::EPSILON;
         let nbatch_denom = root_flow.context().nbatch();
         for b in 0..nbatch_denom {
@@ -805,7 +805,8 @@ impl<V: Vector> StateRefMut<'_, V> {
         rtol: Eqn::T,
         eqn: &Eqn,
         solver_order: usize,
-    ) where
+    ) -> Result<(), DiffsolError>
+    where
         Eqn: OdeEquations<T = V::T, V = V, C = V::C>,
     {
         let is_neg_h = h0 < Eqn::T::zero();
@@ -828,11 +829,11 @@ impl<V: Vector> StateRefMut<'_, V> {
             let f1 = if is_neg_h {
                 let y1 = f0.clone() * scale(-h0) + y0;
                 let t1 = t0 - h0;
-                eqn.rhs().call(&y1, t1)
+                eqn.rhs().call(&y1, t1)?
             } else {
                 let y1 = f0.clone() * scale(h0) + y0;
                 let t1 = t0 + h0;
-                eqn.rhs().call(&y1, t1)
+                eqn.rhs().call(&y1, t1)?
             };
 
             let df = f1 - f0;
@@ -864,6 +865,7 @@ impl<V: Vector> StateRefMut<'_, V> {
         if is_neg_h {
             *self.h = -*self.h;
         }
+        Ok(())
     }
 }
 
@@ -957,7 +959,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             ode_problem.rtol,
             &ode_problem.eqn,
             solver_order,
-        );
+        )?;
         Ok(ret)
     }
 
@@ -992,7 +994,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             ode_problem.rtol,
             &ode_problem.eqn,
             solver_order,
-        );
+        )?;
         Ok(ret)
     }
 
@@ -1016,7 +1018,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             augmented_eqn.set_index(i);
             augmented_eqn
                 .rhs()
-                .call_inplace(&state.s[i], *state.t, &mut state.ds[i]);
+                .call_inplace(&state.s[i], *state.t, &mut state.ds[i])?;
         }
         ret.as_mut().set_step_size(
             ode_problem.h0,
@@ -1024,7 +1026,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             ode_problem.rtol,
             &ode_problem.eqn,
             solver_order,
-        );
+        )?;
         Ok(ret)
     }
 
@@ -1075,7 +1077,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             ode_problem.rtol,
             &ode_problem.eqn,
             solver_order,
-        );
+        )?;
         Ok(ret)
     }
 
@@ -1092,11 +1094,11 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
         let t = ode_problem.t0;
         let h = ode_problem.h0;
         let y = ode_problem.eqn.init().call(t);
-        let dy = ode_problem.eqn.rhs().call(&y, t);
+        let dy = ode_problem.eqn.rhs().call(&y, t)?;
         let (s, ds) = (vec![], vec![]);
         let (dg, g) = if ode_problem.integrate_out {
             if let Some(out) = ode_problem.eqn.out() {
-                (out.call(&y, t), V::zeros(out.nout(), y.context().clone()))
+                (out.call(&y, t)?, V::zeros(out.nout(), y.context().clone()))
             } else {
                 // If no explicit output is defined, default output is identity on state.
                 (y.clone(), V::zeros(y.len(), y.context().clone()))
@@ -1184,7 +1186,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             for i in 0..naug {
                 augmented_eqn.set_index(i);
                 let dsgi = if let Some(out) = augmented_eqn.out() {
-                    out.call(&state.s[i], state.t)
+                    out.call(&state.s[i], state.t)?
                 } else {
                     state.s[i].clone()
                 };
@@ -1213,7 +1215,8 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
         rtol: Eqn::T,
         eqn: &Eqn,
         solver_order: usize,
-    ) where
+    ) -> Result<(), DiffsolError>
+    where
         Eqn: OdeEquations<T = V::T, V = V, C = V::C>,
     {
         let is_neg_h = h0 < Eqn::T::zero();
@@ -1237,11 +1240,11 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
             let f1 = if is_neg_h {
                 let y1 = f0.clone() * scale(-h0) + y0;
                 let t1 = t0 - h0;
-                eqn.rhs().call(&y1, t1)
+                eqn.rhs().call(&y1, t1)?
             } else {
                 let y1 = f0.clone() * scale(h0) + y0;
                 let t1 = t0 + h0;
-                eqn.rhs().call(&y1, t1)
+                eqn.rhs().call(&y1, t1)?
             };
 
             let df = f1 - f0;
@@ -1274,6 +1277,7 @@ pub trait OdeSolverState<V: Vector>: Clone + Sized + Send {
         if is_neg_h {
             *state.h = -*state.h;
         }
+        Ok(())
     }
 }
 
@@ -1376,7 +1380,8 @@ mod test {
         let mut state = BdfState::<V>::new_without_initialise(&problem).unwrap();
         state
             .as_mut()
-            .set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+            .set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1)
+            .unwrap();
 
         assert!(state.as_ref().h < 0.0);
     }
@@ -1395,7 +1400,8 @@ mod test {
 
         state
             .as_mut()
-            .set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+            .set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1)
+            .unwrap();
 
         assert!((state.as_ref().h - 1e-6).abs() < 1e-12);
     }
@@ -1608,7 +1614,7 @@ mod test {
         let state_mut = state.as_mut();
         *state_mut.t = t;
         state_mut.y[0] = y;
-        state_mut.dy[0] = problem.eqn.rhs().call(state_mut.y, t)[0];
+        state_mut.dy[0] = problem.eqn.rhs().call(state_mut.y, t).unwrap()[0];
         state_mut.s[0][0] = s[0];
         state_mut.s[1][0] = s[1];
         state
@@ -1874,8 +1880,8 @@ mod test {
         );
         let root = ParameterisedOp::new(&root, &p);
 
-        let reset_dt = reset.time_derive(&x, t);
-        let root_dt = root.time_derive(&x, t);
+        let reset_dt = reset.time_derive(&x, t).unwrap();
+        let root_dt = root.time_derive(&x, t).unwrap();
 
         assert_scalar_close_tol(reset_dt[0], 0.8, 1e-8);
         assert_scalar_close_tol(root_dt[0], -0.2, 1e-8);

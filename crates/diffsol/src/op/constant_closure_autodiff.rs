@@ -36,7 +36,14 @@ impl<M: Matrix, F> ConstantClosureAutodiff<M, F> {
 }
 
 impl<M: Matrix, F> BuilderOp for ConstantClosureAutodiff<M, F> {
-    fn calculate_sparsity(&mut self, _y0: &Self::V, _t0: Self::T, _p: &Self::V) {}
+    fn calculate_sparsity(
+        &mut self,
+        _y0: &Self::V,
+        _t0: Self::T,
+        _p: &Self::V,
+    ) -> Result<(), crate::LaError> {
+        Ok(())
+    }
     fn set_nstates(&mut self, nstates: usize) {
         self.tmp_nstates = RefCell::new(M::V::zeros(nstates, self.ctx.clone()));
         self.tmp_nstates2 = RefCell::new(M::V::zeros(nstates, self.ctx.clone()));

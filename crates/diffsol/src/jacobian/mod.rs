@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use crate::{
     LinearOp, LinearOpTranspose, Matrix, MatrixSparsity, NonLinearOp, NonLinearOpAdjoint,
-    NonLinearOpJacobian, NonLinearOpSens, NonLinearOpSensAdjoint, Scalar, Vector, VectorIndex,
-    VectorView,
+    NonLinearOpJacobian, NonLinearOpSens, NonLinearOpSensAdjoint, OperatorResult, Scalar, Vector,
+    VectorIndex, VectorView,
 };
 use num_traits::{One, Zero};
 
@@ -47,13 +47,32 @@ macro_rules! gen_find_non_zeros_nonlinear {
     };
 }
 
-gen_find_non_zeros_nonlinear!(
-    find_jacobian_non_zeros,
-    jac_mul_inplace,
-    NonLinearOpJacobian,
-    nout,
-    nstates
-);
+/// Find the non-zero entries of a nonlinear operator's Jacobian.
+pub fn find_jacobian_non_zeros<F: NonLinearOpJacobian + ?Sized>(
+    op: &F,
+    x: &F::V,
+    t: F::T,
+) -> OperatorResult<Vec<(usize, usize)>> {
+    let mut v = F::V::zeros(op.nstates(), op.context().clone());
+    let mut col = F::V::zeros(op.nout(), op.context().clone());
+    let mut triplets = Vec::with_capacity(op.nstates());
+    for j in 0..op.nstates() {
+        v.set_index(j, F::T::NAN);
+        let result = op.jac_mul_inplace(x, t, &v, &mut col);
+        v.set_index(j, F::T::zero());
+        result?;
+        {
+            let col_b0 = col.get_batch(0);
+            for i in 0..op.nout() {
+                if col_b0.get_index(i).is_nan() {
+                    triplets.push((i, j));
+                }
+            }
+        }
+        col.fill(F::T::zero());
+    }
+    Ok(triplets)
+}
 gen_find_non_zeros_nonlinear!(
     find_adjoint_non_zeros,
     jac_transpose_mul_inplace,
@@ -82,13 +101,18 @@ macro_rules! gen_find_non_zeros_linear {
         /// TODO: This function is not efficient for non-host vectors and could be part of the Vector trait
         ///       to allow for more efficient implementations. It's ok for now since this is only used once
         ///       during the setup phase.
-        pub fn $name<F: LinearOp + ?Sized $(+ $op_trait)?>(op: &F, t: F::T) -> Vec<(usize, usize)> {
+        pub fn $name<F: LinearOp + ?Sized $(+ $op_trait)?>(
+            op: &F,
+            t: F::T,
+        ) -> OperatorResult<Vec<(usize, usize)>> {
             let mut v = F::V::zeros(op.nstates(), op.context().clone());
             let mut col = F::V::zeros(op.nout(), op.context().clone());
             let mut triplets = Vec::with_capacity(op.nstates());
             for j in 0..op.nstates() {
                 v.set_index(j, F::T::NAN);
-                op.$op_fn(&v, t, &mut col);
+                let result = op.$op_fn(&v, t, &mut col);
+                v.set_index(j, F::T::zero());
+                result?;
                 {
                     // assume non-zeros are the same for all batches
                     let col_b0 = col.get_batch(0);
@@ -99,9 +123,8 @@ macro_rules! gen_find_non_zeros_linear {
                     }
                 }
                 col.fill(F::T::zero());
-                v.set_index(j, F::T::zero());
             }
-            triplets
+            Ok(triplets)
         }
     };
 }
@@ -237,7 +260,7 @@ impl<M: Matrix> JacobianColoring<M> {
         x: &F::V,
         t: F::T,
         y: &mut F::M,
-    ) {
+    ) -> OperatorResult {
         let mut v = self.scratch_v.borrow_mut();
         let mut col = self.scratch_col.borrow_mut();
         for c in 0..self.dst_indices_per_color.len() {
@@ -245,10 +268,12 @@ impl<M: Matrix> JacobianColoring<M> {
             let dst_indices = &self.dst_indices_per_color[c];
             let src_indices = &self.src_indices_per_color[c];
             v.assign_at_indices(input, F::T::one());
-            op.jac_mul_inplace(x, t, &v, &mut col);
-            y.set_data_with_indices(dst_indices, src_indices, &col);
+            let result = op.jac_mul_inplace(x, t, &v, &mut col);
             v.assign_at_indices(input, F::T::zero());
+            result?;
+            y.set_data_with_indices(dst_indices, src_indices, &col);
         }
+        Ok(())
     }
 
     /// Compute the sensitivity matrix (∂F/∂p) in-place using the coloring scheme.
@@ -340,7 +365,7 @@ impl<M: Matrix> JacobianColoring<M> {
         op: &F,
         t: F::T,
         y: &mut F::M,
-    ) {
+    ) -> OperatorResult {
         let mut v = self.scratch_v.borrow_mut();
         let mut col = self.scratch_col.borrow_mut();
         for c in 0..self.dst_indices_per_color.len() {
@@ -348,10 +373,12 @@ impl<M: Matrix> JacobianColoring<M> {
             let dst_indices = &self.dst_indices_per_color[c];
             let src_indices = &self.src_indices_per_color[c];
             v.assign_at_indices(input, F::T::one());
-            op.call_inplace(&v, t, &mut col);
-            y.set_data_with_indices(dst_indices, src_indices, &col);
+            let result = op.call_inplace(&v, t, &mut col);
             v.assign_at_indices(input, F::T::zero());
+            result?;
+            y.set_data_with_indices(dst_indices, src_indices, &col);
         }
+        Ok(())
     }
 }
 
@@ -407,7 +434,7 @@ mod tests {
         );
         let y0 = M::V::zeros(nstates, p.context().clone());
         let t0 = M::T::zero();
-        ret.calculate_sparsity(&y0, t0, p);
+        ret.calculate_sparsity(&y0, t0, p).unwrap();
         ret
     }
 
@@ -436,7 +463,7 @@ mod tests {
             p.context().clone(),
         );
         let t0 = M::T::zero();
-        ret.calculate_sparsity(t0, p);
+        ret.calculate_sparsity(t0, p).unwrap();
         ret
     }
 
@@ -461,7 +488,8 @@ mod tests {
             let op = helper_triplets2op_nonlinear::<M>(triplets.as_slice(), &p, 2, 2);
             let op = ParameterisedOp::new(&op, &p);
             let non_zeros =
-                find_jacobian_non_zeros(&op, &M::V::zeros(2, p.context().clone()), M::T::zero());
+                find_jacobian_non_zeros(&op, &M::V::zeros(2, p.context().clone()), M::T::zero())
+                    .unwrap();
             let expect = triplets
                 .iter()
                 .map(|(i, j, _v)| (*i, *j))
@@ -502,7 +530,8 @@ mod tests {
             let op = helper_triplets2op_nonlinear::<M>(triplets.as_slice(), &p, 2, 2);
             let op = ParameterisedOp::new(&op, &p);
             let non_zeros =
-                find_jacobian_non_zeros(&op, &M::V::zeros(2, p.context().clone()), M::T::zero());
+                find_jacobian_non_zeros(&op, &M::V::zeros(2, p.context().clone()), M::T::zero())
+                    .unwrap();
             let ncols = op.nstates();
             let graph = nonzeros2graph(non_zeros.as_slice(), ncols);
             let coloring = color_graph_greedy(&graph);
@@ -555,10 +584,10 @@ mod tests {
                 p.context().clone(),
             );
             let mut jac = M::new_from_sparsity(3, 3, op.jacobian_sparsity(), p.context().clone());
-            coloring.jacobian_inplace(&op, &y0, t0, &mut jac);
+            coloring.jacobian_inplace(&op, &y0, t0, &mut jac).unwrap();
             let mut gemv1 = M::V::zeros(n, p.context().clone());
             let v = M::V::from_element(3, M::T::one(), p.context().clone());
-            op.jac_mul_inplace(&y0, t0, &v, &mut gemv1);
+            op.jac_mul_inplace(&y0, t0, &v, &mut gemv1).unwrap();
             let mut gemv2 = M::V::zeros(n, p.context().clone());
             jac.gemv(M::T::one(), &v, M::T::zero(), &mut gemv2);
             gemv1.assert_eq_st(&gemv2, M::T::from_f64(1e-10).unwrap());
@@ -577,10 +606,10 @@ mod tests {
             let coloring =
                 JacobianColoring::new(&op.sparsity().unwrap(), &nonzeros, p.context().clone());
             let mut jac = M::new_from_sparsity(3, 3, op.sparsity(), p.context().clone());
-            coloring.matrix_inplace(&op, t0, &mut jac);
+            coloring.matrix_inplace(&op, t0, &mut jac).unwrap();
             let mut gemv1 = M::V::zeros(n, p.context().clone());
             let v = M::V::from_element(3, M::T::one(), p.context().clone());
-            op.gemv_inplace(&v, t0, M::T::zero(), &mut gemv1);
+            op.gemv_inplace(&v, t0, M::T::zero(), &mut gemv1).unwrap();
             let mut gemv2 = M::V::zeros(n, p.context().clone());
             jac.gemv(M::T::one(), &v, M::T::zero(), &mut gemv2);
             gemv1.assert_eq_st(&gemv2, M::T::from_f64(1e-10).unwrap());

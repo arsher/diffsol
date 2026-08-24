@@ -761,7 +761,8 @@ where
         self.problem
             .eqn
             .rhs()
-            .call_inplace(&y_vec, M::T::from_f64(t).unwrap(), &mut dydt);
+            .call_inplace(&y_vec, M::T::from_f64(t).unwrap(), &mut dydt)
+            .map_err(DiffsolError::from)?;
         Ok(dydt.clone_as_vec().to_host_array())
     }
 
@@ -786,12 +787,11 @@ where
         let y_vec = M::V::from_slice(&y, M::C::default());
         let v_vec = M::V::from_slice(&v, M::C::default());
         let mut dydt = M::V::zeros(n, M::C::default());
-        self.problem.eqn.rhs().jac_mul_inplace(
-            &y_vec,
-            M::T::from_f64(t).unwrap(),
-            &v_vec,
-            &mut dydt,
-        );
+        self.problem
+            .eqn
+            .rhs()
+            .jac_mul_inplace(&y_vec, M::T::from_f64(t).unwrap(), &v_vec, &mut dydt)
+            .map_err(DiffsolError::from)?;
         Ok(dydt.clone_as_vec().to_host_array())
     }
 

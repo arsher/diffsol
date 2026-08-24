@@ -2,7 +2,7 @@ use crate::{
     find_jacobian_non_zeros, find_matrix_non_zeros, ode_solver::problem::OdeSolverSolution,
     ConstantOp, JacobianColoring, LinearOp, Matrix, MatrixHost, MatrixSparsity, NonLinearOp,
     NonLinearOpJacobian, OdeEquations, OdeEquationsImplicit, OdeEquationsRef, OdeSolverProblem, Op,
-    ParameterisedOp, UnitCallable, Vector,
+    OperatorResult, ParameterisedOp, UnitCallable, Vector,
 };
 use num_traits::{FromPrimitive, One, Zero};
 
@@ -23,20 +23,23 @@ const BETA: f64 = 1000.0;
 
 #[cfg(feature = "diffsl")]
 #[allow(clippy::type_complexity)]
-pub fn foodweb_diffsl_problem<M, CG, const NX: usize>() -> (
-    OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = M::V, T = M::T, C = M::C>>,
-    OdeSolverSolution<M::V>,
-)
+pub fn foodweb_diffsl_problem<M, CG, const NX: usize>() -> Result<
+    (
+        OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = M::V, T = M::T, C = M::C>>,
+        OdeSolverSolution<M::V>,
+    ),
+    crate::DiffsolError,
+>
 where
     M: MatrixHost<T = f64>,
     CG: crate::CodegenModuleJit + crate::CodegenModuleCompile,
 {
     use crate::{OdeBuilder, VectorHost};
 
-    let (problem, _soln) = foodweb_problem::<M, NX>();
+    let (problem, _soln) = foodweb_problem::<M, NX>()?;
     let u0 = problem.eqn.init().call(0.0);
-    let diffop = FoodWebDiff::<M, NX>::new(&u0, 0.0);
-    let diff = diffop.jacobian(&u0, 0.0);
+    let diffop = FoodWebDiff::<M, NX>::new(&u0, 0.0)?;
+    let diff = diffop.jacobian(&u0, 0.0)?;
     let (diff_idx, diff_vals) = diff.triplet_iter();
     let diff_diffsl = diff_idx
         .zip(diff_vals)
@@ -142,7 +145,7 @@ where
         .build_from_diffsl::<CG>(code.as_str())
         .unwrap();
     let soln = soln::<M>(problem.context().clone());
-    (problem, soln)
+    Ok((problem, soln))
 }
 
 pub struct FoodWebContext<M, const NX: usize>
@@ -416,7 +419,7 @@ where
      * The interaction term is computed by the function WebRates.
      */
     #[allow(unused_mut)]
-    fn call_inplace(&self, x: &M::V, _t: M::T, mut y: &mut M::V) {
+    fn call_inplace(&self, x: &M::V, _t: M::T, mut y: &mut M::V) -> OperatorResult {
         let nsmx: usize = NUM_SPECIES * NX;
         let dx: f64 = AX / (NX as f64 - 1.0);
         let dy: f64 = AY / (NX as f64 - 1.0);
@@ -491,6 +494,7 @@ where
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -499,7 +503,7 @@ where
     M: MatrixHost,
 {
     #[allow(unused_mut)]
-    fn jac_mul_inplace(&self, x: &M::V, _t: M::T, v: &M::V, mut y: &mut M::V) {
+    fn jac_mul_inplace(&self, x: &M::V, _t: M::T, v: &M::V, mut y: &mut M::V) -> OperatorResult {
         let nsmx: usize = NUM_SPECIES * NX;
         let dx: f64 = AX / (NX as f64 - 1.0);
         let dy: f64 = AY / (NX as f64 - 1.0);
@@ -579,12 +583,13 @@ where
                 }
             }
         }
+        Ok(())
     }
-    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) {
+    fn jacobian_inplace(&self, x: &Self::V, t: Self::T, y: &mut Self::M) -> OperatorResult {
         if let Some(coloring) = self.foodweb.rhs_coloring.as_ref() {
-            coloring.jacobian_inplace(self, x, t, y);
+            coloring.jacobian_inplace(self, x, t, y)
         } else {
-            self._default_jacobian_inplace(x, t, y);
+            self._default_jacobian_inplace(x, t, y)
         }
     }
     fn jacobian_sparsity(&self) -> Option<M::Sparsity> {
@@ -636,7 +641,13 @@ where
     M: MatrixHost,
 {
     #[allow(unused_mut)]
-    fn gemv_inplace(&self, x: &Self::V, _t: Self::T, beta: Self::T, mut y: &mut Self::V) {
+    fn gemv_inplace(
+        &self,
+        x: &Self::V,
+        _t: Self::T,
+        beta: Self::T,
+        mut y: &mut Self::V,
+    ) -> OperatorResult {
         let nsmx: usize = NUM_SPECIES * NX;
         /* Loop over all grid points, setting residual values appropriately
         for differential or algebraic components.                        */
@@ -653,6 +664,7 @@ where
                 }
             }
         }
+        Ok(())
     }
     fn sparsity(&self) -> Option<M::Sparsity> {
         self.foodweb.mass_sparsity.clone()
@@ -696,7 +708,7 @@ where
     M: MatrixHost,
 {
     #[allow(unused_mut)]
-    fn call_inplace(&self, x: &M::V, _t: M::T, mut y: &mut M::V) {
+    fn call_inplace(&self, x: &M::V, _t: M::T, mut y: &mut M::V) -> OperatorResult {
         let nsmx: usize = NUM_SPECIES * NX;
         let jx_tl = 0;
         let jy_tl = 0;
@@ -708,6 +720,7 @@ where
             y[2 * is] = x[loc_tl + is];
             y[2 * is + 1] = x[loc_br + is];
         }
+        Ok(())
     }
 }
 
@@ -716,7 +729,13 @@ where
     M: MatrixHost,
 {
     #[allow(unused_mut)]
-    fn jac_mul_inplace(&self, _x: &Self::V, _t: Self::T, v: &Self::V, mut y: &mut Self::V) {
+    fn jac_mul_inplace(
+        &self,
+        _x: &Self::V,
+        _t: Self::T,
+        v: &Self::V,
+        mut y: &mut Self::V,
+    ) -> OperatorResult {
         let nsmx: usize = NUM_SPECIES * NX;
 
         let jx_tl = 0;
@@ -729,6 +748,7 @@ where
             y[2 * is] = v[loc_tl + is];
             y[2 * is + 1] = v[loc_br + is];
         }
+        Ok(())
     }
 }
 
@@ -747,7 +767,7 @@ impl<M, const NX: usize> FoodWeb<M, NX>
 where
     M: MatrixHost,
 {
-    pub fn new(context: FoodWebContext<M, NX>, t0: M::T) -> Self {
+    pub fn new(context: FoodWebContext<M, NX>, t0: M::T) -> Result<Self, crate::DiffsolError> {
         let mut ret = Self {
             context,
             rhs_sparsity: None,
@@ -758,10 +778,12 @@ where
         let init = FoodWebInit::new(&ret);
         let y0 = init.call(t0);
         let rhs = FoodWebRhs::new(&ret);
-        let non_zeros = find_jacobian_non_zeros(&rhs, &y0, t0);
-        ret.rhs_sparsity = Some(
-            MatrixSparsity::try_from_indices(rhs.nout(), rhs.nstates(), non_zeros.clone()).unwrap(),
-        );
+        let non_zeros = find_jacobian_non_zeros(&rhs, &y0, t0)?;
+        ret.rhs_sparsity = Some(MatrixSparsity::try_from_indices(
+            rhs.nout(),
+            rhs.nstates(),
+            non_zeros.clone(),
+        )?);
         ret.rhs_coloring = Some(JacobianColoring::new(
             ret.rhs_sparsity.as_ref().unwrap(),
             &non_zeros,
@@ -769,17 +791,18 @@ where
         ));
 
         let mass = FoodWebMass::new(&ret);
-        let non_zeros = find_matrix_non_zeros(&mass, t0);
-        ret.mass_sparsity = Some(
-            MatrixSparsity::try_from_indices(mass.nout(), mass.nstates(), non_zeros.clone())
-                .unwrap(),
-        );
+        let non_zeros = find_matrix_non_zeros(&mass, t0)?;
+        ret.mass_sparsity = Some(MatrixSparsity::try_from_indices(
+            mass.nout(),
+            mass.nstates(),
+            non_zeros.clone(),
+        )?);
         ret.mass_coloring = Some(JacobianColoring::new(
             ret.mass_sparsity.as_ref().unwrap(),
             &non_zeros,
             ret.context().clone(),
         ));
-        ret
+        Ok(ret)
     }
 }
 
@@ -859,16 +882,18 @@ impl<M, const NX: usize> FoodWebDiff<M, NX>
 where
     M: MatrixHost,
 {
-    pub fn new(y0: &M::V, t0: M::T) -> Self {
+    pub fn new(y0: &M::V, t0: M::T) -> Result<Self, crate::LaError> {
         let mut ret = Self {
             sparsity: None,
             ctx: y0.context().clone(),
         };
-        let non_zeros = find_jacobian_non_zeros(&ret, y0, t0);
-        ret.sparsity = Some(
-            MatrixSparsity::try_from_indices(ret.nout(), ret.nstates(), non_zeros.clone()).unwrap(),
-        );
-        ret
+        let non_zeros = find_jacobian_non_zeros(&ret, y0, t0)?;
+        ret.sparsity = Some(MatrixSparsity::try_from_indices(
+            ret.nout(),
+            ret.nstates(),
+            non_zeros.clone(),
+        )?);
+        Ok(ret)
     }
 }
 
@@ -902,7 +927,7 @@ where
     M: MatrixHost,
 {
     #[allow(unused_mut)]
-    fn call_inplace(&self, x: &M::V, _t: M::T, mut y: &mut M::V) {
+    fn call_inplace(&self, x: &M::V, _t: M::T, mut y: &mut M::V) -> OperatorResult {
         let nsmx: usize = NX;
         let dx = AX / (NX as f64 - 1.0);
         let dy = AY / (NX as f64 - 1.0);
@@ -936,6 +961,7 @@ where
                 y[loc] = coy * (dcyui - dcyli) + cox * (dcxui - dcxli);
             }
         }
+        Ok(())
     }
 }
 
@@ -945,7 +971,7 @@ where
     M: MatrixHost,
 {
     #[allow(unused_mut)]
-    fn jac_mul_inplace(&self, _x: &M::V, _t: M::T, v: &M::V, mut y: &mut M::V) {
+    fn jac_mul_inplace(&self, _x: &M::V, _t: M::T, v: &M::V, mut y: &mut M::V) -> OperatorResult {
         let nsmx: usize = NX;
         let dx = AX / (NX as f64 - 1.0);
         let dy = AY / (NX as f64 - 1.0);
@@ -979,6 +1005,7 @@ where
                 y[loc] = coy * (dcyui - dcyli) + cox * (dcxui - dcxli);
             }
         }
+        Ok(())
     }
     fn jacobian_sparsity(&self) -> Option<M::Sparsity> {
         self.sparsity.clone()
@@ -1065,10 +1092,13 @@ fn soln<M: Matrix>(ctx: M::C) -> OdeSolverSolution<M::V> {
 }
 
 #[allow(clippy::type_complexity)]
-pub fn foodweb_problem<M, const NX: usize>() -> (
-    OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = M::V, T = M::T, C = M::C>>,
-    OdeSolverSolution<M::V>,
-)
+pub fn foodweb_problem<M, const NX: usize>() -> Result<
+    (
+        OdeSolverProblem<impl OdeEquationsImplicit<M = M, V = M::V, T = M::T, C = M::C>>,
+        OdeSolverSolution<M::V>,
+    ),
+    crate::DiffsolError,
+>
 where
     M: MatrixHost,
 {
@@ -1082,7 +1112,7 @@ where
     let t0 = M::T::zero();
     let h0 = M::T::one();
     let context = FoodWebContext::<M, NX>::new(ctx);
-    let eqn = FoodWeb::new(context, t0);
+    let eqn = FoodWeb::new(context, t0)?;
     let problem = OdeSolverProblem::new(
         eqn,
         rtol,
@@ -1098,10 +1128,9 @@ where
         false,
         Default::default(),
         Default::default(),
-    )
-    .unwrap();
+    )?;
     let soln = soln::<M>(problem.context().clone());
-    (problem, soln)
+    Ok((problem, soln))
 }
 
 #[cfg(test)]
@@ -1117,9 +1146,9 @@ mod tests {
     fn test_jacobian() {
         type M = NalgebraMat<f64>;
         const NX: usize = 10;
-        let (problem, _soln) = foodweb_problem::<M, NX>();
+        let (problem, _soln) = foodweb_problem::<M, NX>().unwrap();
         let u0 = problem.eqn.init().call(0.0);
-        let jac = problem.eqn.rhs().jacobian(&u0, 0.0);
+        let jac = problem.eqn.rhs().jacobian(&u0, 0.0).unwrap();
 
         // check the jacobian via finite differences
         let h = 1e-5;
@@ -1128,8 +1157,8 @@ mod tests {
             let mut vminus = u0.clone();
             vplus[i] += h;
             vminus[i] -= h;
-            let yplus = problem.eqn.rhs().call(&vplus, 0.0);
-            let yminus = problem.eqn.rhs().call(&vminus, 0.0);
+            let yplus = problem.eqn.rhs().call(&vplus, 0.0).unwrap();
+            let yminus = problem.eqn.rhs().call(&vminus, 0.0).unwrap();
             let fdiff = (yplus - yminus) * Scale(1.0 / (2.0 * h));
             for j in 0..jac.nrows() {
                 assert!(
@@ -1151,12 +1180,12 @@ mod tests {
 
         type M = NalgebraMat<f64>;
         const NX: usize = 10;
-        let (problem, _soln) = foodweb_problem::<M, NX>();
+        let (problem, _soln) = foodweb_problem::<M, NX>().unwrap();
         let u0 = problem.eqn.init().call(0.0);
-        let jac = problem.eqn.rhs().jacobian(&u0, 0.0);
-        let y0 = problem.eqn.rhs().call(&u0, 0.0);
+        let jac = problem.eqn.rhs().jacobian(&u0, 0.0).unwrap();
+        let y0 = problem.eqn.rhs().call(&u0, 0.0).unwrap();
 
-        let (problem_diffsl, _soln) = foodweb_diffsl_problem::<M, LlvmModule, NX>();
+        let (problem_diffsl, _soln) = foodweb_diffsl_problem::<M, LlvmModule, NX>().unwrap();
         let u0_diffsl = problem_diffsl.eqn.init().call(0.0);
         for i in 0..u0.len() {
             let i_diffsl = if i % NUM_SPECIES >= NPREY {
@@ -1173,7 +1202,7 @@ mod tests {
             );
         }
 
-        let y0_diffsl = problem_diffsl.eqn.rhs().call(&u0_diffsl, 0.0);
+        let y0_diffsl = problem_diffsl.eqn.rhs().call(&u0_diffsl, 0.0).unwrap();
         for i in 0..y0.len() {
             let i_diffsl = if i % NUM_SPECIES >= NPREY {
                 NX * NX + i / NUM_SPECIES
@@ -1189,7 +1218,7 @@ mod tests {
             );
         }
 
-        let jac_diffsl = problem_diffsl.eqn.rhs().jacobian(&u0_diffsl, 0.0);
+        let jac_diffsl = problem_diffsl.eqn.rhs().jacobian(&u0_diffsl, 0.0).unwrap();
         for i in 0..jac.ncols() {
             for j in 0..jac.nrows() {
                 let i_diffsl = if i % NUM_SPECIES >= NPREY {
@@ -1218,8 +1247,8 @@ mod tests {
     fn test_mass() {
         type M = NalgebraMat<f64>;
         const NX: usize = 10;
-        let (problem, _soln) = foodweb_problem::<M, NX>();
-        let mass = problem.eqn.mass().unwrap().matrix(0.0);
+        let (problem, _soln) = foodweb_problem::<M, NX>().unwrap();
+        let mass = problem.eqn.mass().unwrap().matrix(0.0).unwrap();
         for i in 0..mass.ncols() {
             for j in 0..mass.nrows() {
                 if i == j && i % NUM_SPECIES < NPREY {

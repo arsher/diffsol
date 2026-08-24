@@ -1,5 +1,5 @@
 use crate::{C, M, T, V};
-use diffsol::{NonLinearOp, Op, Vector};
+use diffsol::{NonLinearOp, Op, OperatorResult, Vector};
 
 pub struct MyRoot<'a> {
     pub p: &'a V,
@@ -25,7 +25,8 @@ impl Op for MyRoot<'_> {
 }
 
 impl NonLinearOp for MyRoot<'_> {
-    fn call_inplace(&self, x: &V, _t: T, y: &mut V) {
+    fn call_inplace(&self, x: &V, _t: T, y: &mut V) -> OperatorResult {
         y[0] = x[0] - 1.0;
+        Ok(())
     }
 }

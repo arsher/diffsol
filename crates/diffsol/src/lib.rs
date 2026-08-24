@@ -364,6 +364,7 @@ pub use small::{SmallMat, SmallVec};
 pub mod error;
 
 pub use diffsol_la::error::LaError;
+pub use diffsol_la::{OperatorError, OperatorErrorKind, OperatorResult};
 pub use error::DiffsolError;
 
 #[cfg(feature = "sundials")]
@@ -448,7 +449,8 @@ pub use op::nonlinear_op::{
 pub use op::stoch::{StochOp, StochOpKind};
 pub use op::{
     closure::Closure, closure_with_adjoint::ClosureWithAdjoint, constant_closure::ConstantClosure,
-    constant_closure_with_adjoint::ConstantClosureWithAdjoint, linear_closure::LinearClosure,
+    constant_closure_with_adjoint::ConstantClosureWithAdjoint, fallible_closure::FallibleClosure,
+    fallible_linear_closure::FallibleLinearClosure, linear_closure::LinearClosure,
     matrix::MatrixOp, unit::UnitCallable, BuilderOp, Op, ParameterisedOp,
 };
 #[cfg(feature = "autodiff")]

@@ -805,6 +805,21 @@ impl<V: Vector> StateRefMut<'_, V> {
     {
         let is_neg_h = h0 < Eqn::T::zero();
         let requested_h0 = h0.abs();
+        if eqn.mass().is_some() {
+            // The explicit Hairer probe below assumes rhs(t, y) is ydot. For M*ydot = rhs that
+            // identity is generally false, and for a singular mass matrix the algebraic rhs rows
+            // are not derivatives at all. Honor the caller's requested step instead of mixing rhs
+            // and ydot in the curvature estimate. OdeBuilder supplies a nonzero default; retain a
+            // small deterministic fallback for callers that explicitly pass zero.
+            *self.h = if requested_h0 > Eqn::T::zero() {
+                h0
+            } else if is_neg_h {
+                -Eqn::T::from_f64(1e-6).unwrap()
+            } else {
+                Eqn::T::from_f64(1e-6).unwrap()
+            };
+            return Ok(());
+        }
         let (h0, h1) = {
             let y0 = &*self.y;
             let t0 = *self.t;
@@ -1564,6 +1579,37 @@ mod test {
 
         assert!(furthest_time.get() <= 1.0e-4);
         assert!(state.as_ref().h.abs() <= 1.0e-4);
+    }
+
+    #[test]
+    fn mass_problem_honors_requested_initial_step_without_explicit_rhs_probe() {
+        type M = crate::NalgebraMat<f64>;
+        type V = crate::NalgebraVec<f64>;
+
+        let rhs_calls = Rc::new(Cell::new(0));
+        let rhs_calls_for_callback = Rc::clone(&rhs_calls);
+        let problem = OdeBuilder::<M>::new()
+            .h0(2.5e-3)
+            .rhs(move |x, _p, _t, y| {
+                rhs_calls_for_callback.set(rhs_calls_for_callback.get() + 1);
+                y[0] = -x[0];
+            })
+            .mass(|v, _p, _t, beta, y| {
+                let previous = y[0];
+                y[0] = 2.0 * v[0] + beta * previous;
+            })
+            .init(|_p, _t, y| y[0] = 1.0, 1)
+            .build()
+            .unwrap();
+        let mut state = BdfState::<V>::new_without_initialise(&problem).unwrap();
+
+        state
+            .as_mut()
+            .set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1)
+            .unwrap();
+
+        assert_eq!(state.as_ref().h, 2.5e-3);
+        assert_eq!(rhs_calls.get(), 0);
     }
 
     type TestMat = NalgebraMat<f64>;

@@ -130,10 +130,14 @@ impl<T: NalgebraScalar> LinearSolver<NalgebraMat<T>> for ReusableLU<T> {
     >(
         &mut self,
         op: &C,
-    ) {
-        let lu = self.lu.as_mut().expect("Matrix not set");
-        op.matrix_inplace(&mut lu.a);
+    ) -> Result<(), LaError> {
+        let lu = self
+            .lu
+            .as_mut()
+            .ok_or_else(|| linear_solver_error!(LinearSolverNotSetup))?;
+        op.matrix_inplace(&mut lu.a)?;
         lu.factor();
+        Ok(())
     }
 
     fn set_sparsity<
@@ -141,11 +145,12 @@ impl<T: NalgebraScalar> LinearSolver<NalgebraMat<T>> for ReusableLU<T> {
     >(
         &mut self,
         op: &C,
-    ) {
+    ) -> Result<(), LaError> {
         let ncols = op.ncols();
         let nrows = op.nrows();
         let a = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), *op.context());
         self.lu = Some(BatchLu::new(a));
+        Ok(())
     }
 }
 
@@ -166,8 +171,8 @@ mod tests {
     fn test_lu() {
         let mut s = ReusableLU::<f64>::default();
         let op = diagonal_op::<NalgebraMat<f64>>(2.0);
-        s.set_sparsity(&op);
-        s.set_linearisation(&op);
+        s.set_sparsity(&op).unwrap();
+        s.set_linearisation(&op).unwrap();
         let b = NalgebraVec::from_vec(vec![2.0, 4.0], Default::default());
         let x = s.solve(&b).unwrap();
         x.assert_eq_st(

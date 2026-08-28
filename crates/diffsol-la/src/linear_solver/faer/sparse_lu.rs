@@ -89,14 +89,14 @@ impl<T: FaerScalar> LinearSolver<FaerSparseMat<T>> for FaerSparseLU<T> {
         let ncols = op.ncols();
         let nrows = op.nrows();
         let matrix = C::M::new_from_sparsity(nrows, ncols, op.sparsity(), *op.context());
-        self.lu_symbolic = Some(
-            SymbolicLu::try_new(matrix.data[0].symbolic()).map_err(|error| {
+        self.lu_symbolic = Some(SymbolicLu::try_new(matrix.data[0].symbolic()).map_err(
+            |error| {
                 linear_solver_error!(
                     Other,
                     format!("Faer sparse symbolic analysis failed: {error}")
                 )
-            })?,
-        );
+            },
+        )?);
         self.matrix = Some(matrix);
         Ok(())
     }

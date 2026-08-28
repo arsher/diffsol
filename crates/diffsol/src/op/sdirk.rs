@@ -1,6 +1,6 @@
 use crate::{
-    matrix::MatrixView, scale, DenseMatrix, LinearOp, Matrix, MatrixSparsity,
-    NonLinearOpJacobian, OdeEquations, OdeEquationsImplicit, OperatorResult, Vector,
+    scale, DenseMatrix, LinearOp, Matrix, MatrixSparsity, NonLinearOpJacobian, OdeEquations,
+    OdeEquationsImplicit, OperatorResult, Vector,
 };
 use log::{debug, trace};
 use num_traits::ToPrimitive;

@@ -1573,7 +1573,7 @@ where
 
         {
             let state = &mut self.state;
-            state.y.copy_from(&self.y_predict);
+            state.y.copy_from_view(&state.diff.column(0));
             state.t = self.t_predict;
             state.dy.copy_from_view(&state.diff.column(1));
             state.dy *= scale(Eqn::T::one() / state.h);
@@ -2567,6 +2567,25 @@ mod test {
         problem.set_error_control_indices([0]).unwrap();
         let mut solver = problem.bdf::<LS>().unwrap();
         test_ode_solver(&mut solver, soln, None, false, false);
+    }
+
+    #[test]
+    fn bdf_state_reports_the_newton_corrected_algebraic_coordinate() {
+        let (mut problem, _) = exponential_decay_with_algebraic_problem::<M>(false);
+        problem.set_error_control_indices([0]).unwrap();
+        let mut solver = problem.bdf::<LS>().unwrap();
+        solver.set_stop_time(0.1).unwrap();
+        loop {
+            if solver.step().unwrap() == OdeSolverStopReason::TstopReached {
+                break;
+            }
+        }
+
+        assert!((solver.state.y[2] - solver.state.y[1]).abs() < 1.0e-12);
+        assert_eq!(
+            solver.state.y[0].to_bits(),
+            solver.state.diff.column(0)[0].to_bits()
+        );
     }
 
     #[test]

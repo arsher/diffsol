@@ -2,12 +2,12 @@ use num_traits::FromPrimitive;
 use std::{cell::RefCell, rc::Rc};
 
 use crate::{
-    error::DiffsolError, vector::Vector, AdjointContext, AdjointEquations, AugmentedOdeEquations,
-    AugmentedOdeEquationsImplicit, Bdf, BdfState, CheckpointingPath, DefaultDenseMatrix,
-    DenseMatrix, ExplicitRk, LinearSolver, MatrixRef, NewtonNonlinearSolver, NoLineSearch,
-    OdeEquations, OdeEquationsAdjoint, OdeEquationsImplicit, OdeEquationsImplicitAdjoint,
-    OdeEquationsImplicitSens, OdeSolverMethod, OdeSolverState, RkState, Scalar, Sdirk,
-    SensEquations, Tableau, VectorRef,
+    error::DiffsolError, ode_solver_error, vector::Vector, AdjointContext, AdjointEquations,
+    AugmentedOdeEquations, AugmentedOdeEquationsImplicit, Bdf, BdfState, CheckpointingPath,
+    DefaultDenseMatrix, DenseMatrix, ExplicitRk, LinearSolver, MatrixRef, NewtonNonlinearSolver,
+    NoLineSearch, OdeEquations, OdeEquationsAdjoint, OdeEquationsImplicit,
+    OdeEquationsImplicitAdjoint, OdeEquationsImplicitSens, OdeSolverMethod, OdeSolverState,
+    RkState, Scalar, Sdirk, SensEquations, Tableau, VectorRef,
 };
 
 /// Options for the initial condition solver used to find consistent initial conditions
@@ -168,6 +168,11 @@ where
     pub rtol: Eqn::T,
     /// Absolute tolerance for the solver. The state equations are solved to this and the relative tolerance, given by the norm `sum_i(y_i / (atol_i + rtol * |y0_i|)) < 1`.
     pub atol: Eqn::V,
+    /// State-coordinate indices included in BDF local truncation-error control.
+    ///
+    /// `None` includes every coordinate. Nonlinear convergence always uses every coordinate, so a
+    /// DAE may exclude algebraic coordinates here without weakening its algebraic residual solve.
+    pub(crate) error_control_indices: Option<Vec<usize>>,
     /// Initial time for the ODE solve.
     pub t0: Eqn::T,
     /// Initial step size for the ODE solver.
@@ -535,6 +540,7 @@ where
             eqn,
             rtol,
             atol,
+            error_control_indices: None,
             out_atol,
             out_rtol,
             param_atol,
@@ -556,6 +562,50 @@ where
     /// Returns a mutable reference to the ODE equations being solved.
     pub fn eqn_mut(&mut self) -> &mut Eqn {
         &mut self.eqn
+    }
+
+    /// Select the state coordinates used by BDF local truncation-error control.
+    ///
+    /// This does not change Newton convergence or residual enforcement. It is intended for DAEs
+    /// whose algebraic coordinates should be solved at [`Self::atol`] but have no independent time
+    /// derivative whose truncation error can be estimated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection is empty, repeats an index, or names a coordinate
+    /// outside the state vector.
+    pub fn set_error_control_indices(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+    ) -> Result<(), DiffsolError> {
+        let indices = indices.into_iter().collect::<Vec<_>>();
+        let state_count = self.atol.len();
+        if indices.is_empty() {
+            return Err(ode_solver_error!(
+                BuilderError,
+                "BDF error control requires at least one state coordinate"
+            ));
+        }
+        let mut seen = vec![false; state_count];
+        for &index in &indices {
+            let Some(slot) = seen.get_mut(index) else {
+                return Err(ode_solver_error!(
+                    BuilderError,
+                    format!(
+                        "BDF error-control coordinate {index} is outside the {state_count}-coordinate state"
+                    )
+                ));
+            };
+            if *slot {
+                return Err(ode_solver_error!(
+                    BuilderError,
+                    format!("BDF error-control coordinate {index} is repeated")
+                ));
+            }
+            *slot = true;
+        }
+        self.error_control_indices = Some(indices);
+        Ok(())
     }
     /// Returns a reference to the context associated with the ODE equations.
     pub fn context(&self) -> &Eqn::C {

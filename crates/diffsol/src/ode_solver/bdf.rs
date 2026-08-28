@@ -12,10 +12,10 @@ use num_traits::{abs, FromPrimitive, One, Signed, ToPrimitive, Zero};
 use crate::ode_solver_error;
 use crate::{
     matrix::MatrixRef, nonlinear_solver::root::RootFinder, op::bdf::BdfCallable, scalar::scale,
-    AugmentedOdeEquations, BdfState, DenseMatrix, JacobianUpdate, MatrixViewMut, NonLinearOp,
-    NonLinearSolver, OdeEquationsImplicit, OdeEquationsImplicitAdjoint, OdeEquationsImplicitSens,
-    OdeSolverMethod, OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op, OperatorErrorKind,
-    Scalar, SensEquations, Vector, VectorRef, VectorView, VectorViewMut,
+    AugmentedOdeEquations, BdfState, DenseMatrix, JacobianUpdate, NonLinearOp, NonLinearSolver,
+    OdeEquationsImplicit, OdeEquationsImplicitAdjoint, OdeEquationsImplicitSens, OdeSolverMethod,
+    OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op, OperatorErrorKind, Scalar,
+    SensEquations, Vector, VectorRef, VectorView,
 };
 
 use super::adjoint::AdjointOdeSolverMethod;
@@ -139,6 +139,9 @@ pub struct Bdf<
     op: Option<BdfCallable<&'a Eqn>>,
     n_equal_steps: usize,
     y_delta: Eqn::V,
+    error_delta: Eqn::V,
+    error_control_mask: Option<Eqn::V>,
+    error_control_scale: Eqn::T,
     g_delta: Eqn::V,
     y_predict: Eqn::V,
     t_predict: Eqn::T,
@@ -194,6 +197,9 @@ where
             s_op,
             n_equal_steps: self.n_equal_steps,
             y_delta: self.y_delta.clone(),
+            error_delta: self.error_delta.clone(),
+            error_control_mask: self.error_control_mask.clone(),
+            error_control_scale: self.error_control_scale,
             g_delta: self.g_delta.clone(),
             y_predict: self.y_predict.clone(),
             t_predict: self.t_predict,
@@ -326,6 +332,21 @@ where
         let nstates = problem.eqn.rhs().nstates();
 
         let y_delta = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
+        let error_delta = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
+        let (error_control_mask, error_control_scale) = if let Some(indices) =
+            problem.error_control_indices.as_ref()
+        {
+            let mut mask = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
+            for &index in indices {
+                mask.set_index(index, Eqn::T::one());
+            }
+            (
+                Some(mask),
+                Eqn::T::from_usize(nstates).unwrap() / Eqn::T::from_usize(indices.len()).unwrap(),
+            )
+        } else {
+            (None, Eqn::T::one())
+        };
         let y_predict = <Eqn::V as Vector>::zeros(nstates, ctx.clone());
 
         let nout = if problem.integrate_out {
@@ -350,6 +371,9 @@ where
             nonlinear_solver,
             n_equal_steps: 0,
             y_delta,
+            error_delta,
+            error_control_mask,
+            error_control_scale,
             y_predict,
             t_predict: Eqn::T::zero(),
             s_predict: Eqn::V::zeros(0, ctx.clone()),
@@ -832,7 +856,7 @@ where
         );
     }
 
-    fn error_control(&self) -> Eqn::T {
+    fn error_control(&mut self) -> Eqn::T {
         let state = &self.state;
         let order = state.order;
         let output_in_error_control = self.ode_problem.output_in_error_control();
@@ -853,8 +877,16 @@ where
         if self.op.is_some() {
             let atol = &self.ode_problem.atol;
             let rtol = self.ode_problem.rtol;
-            let err =
-                self.y_delta.squared_norm(&state.y, atol, rtol) * self.error_const2[order - 1];
+            let delta = if let Some(mask) = self.error_control_mask.as_ref() {
+                self.error_delta.copy_from(&self.y_delta);
+                self.error_delta.component_mul_assign(mask);
+                &self.error_delta
+            } else {
+                &self.y_delta
+            };
+            let err = delta.squared_norm(&state.y, atol, rtol)
+                * self.error_control_scale
+                * self.error_const2[order - 1];
             error_norm = error_norm.max(err);
             if output_in_error_control {
                 let rtol = self.ode_problem.out_rtol.unwrap();
@@ -891,7 +923,7 @@ where
         error_norm
     }
 
-    fn predict_error_control(&self, order: usize) -> Eqn::T {
+    fn predict_error_control(&mut self, order: usize) -> Eqn::T {
         let state = &self.state;
         let output_in_error_control = self.ode_problem.output_in_error_control();
         let integrate_sens = self.s_op.is_some();
@@ -911,10 +943,14 @@ where
         let rtol = self.ode_problem.rtol;
         let mut error_norm = M::T::zero();
         if self.op.is_some() {
-            let err = state
-                .diff
-                .column(order + 1)
-                .squared_norm(&state.y, atol, rtol)
+            let predicted = state.diff.column(order + 1);
+            let err = if let Some(mask) = self.error_control_mask.as_ref() {
+                self.error_delta.copy_from_view(&predicted);
+                self.error_delta.component_mul_assign(mask);
+                self.error_delta.squared_norm(&state.y, atol, rtol)
+            } else {
+                predicted.squared_norm(&state.y, atol, rtol)
+            } * self.error_control_scale
                 * self.error_const2[order];
             error_norm = error_norm.max(err);
             if output_in_error_control {
@@ -2523,6 +2559,14 @@ mod test {
         number_of_matrix_evals: 2
         number_of_jac_adj_muls: 0
         "###);
+    }
+
+    #[test]
+    fn bdf_error_control_can_exclude_an_algebraic_coordinate() {
+        let (mut problem, soln) = exponential_decay_with_algebraic_problem::<M>(false);
+        problem.set_error_control_indices([0]).unwrap();
+        let mut solver = problem.bdf::<LS>().unwrap();
+        test_ode_solver(&mut solver, soln, None, false, false);
     }
 
     #[test]

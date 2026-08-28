@@ -3,8 +3,8 @@ use std::cell::Ref;
 
 use crate::{
     error::{DiffsolError, OdeSolverError},
-    AugmentedOdeEquationsImplicit, Convergence, DefaultDenseMatrix, LinearSolver,
-    NewtonNonlinearSolver, NoAug, NoLineSearch, StateRef, StateRefMut,
+    AugmentedOdeEquationsImplicit, BacktrackingLineSearch, Convergence, DefaultDenseMatrix,
+    LinearSolver, NewtonNonlinearSolver, NoAug, StateRef, StateRefMut,
 };
 
 use num_traits::{abs, FromPrimitive, One, Signed, ToPrimitive, Zero};
@@ -133,7 +133,7 @@ pub struct Bdf<
 > where
     Eqn::V: DefaultDenseMatrix,
 {
-    nonlinear_solver: NewtonNonlinearSolver<Eqn::M, LS, NoLineSearch>,
+    nonlinear_solver: NewtonNonlinearSolver<Eqn::M, LS, BacktrackingLineSearch<Eqn::V>>,
     convergence: Convergence<'a, Eqn::V>,
     ode_problem: &'a OdeSolverProblem<Eqn>,
     op: Option<BdfCallable<&'a Eqn>>,
@@ -176,7 +176,8 @@ where
 {
     fn clone(&self) -> Self {
         let problem = self.ode_problem;
-        let nonlinear_solver = NewtonNonlinearSolver::new(LS::default(), NoLineSearch);
+        let nonlinear_solver =
+            NewtonNonlinearSolver::new(LS::default(), BacktrackingLineSearch::default());
         let op = if let Some(op) = self.op.as_ref() {
             let op = op.clone_state(&self.ode_problem.eqn);
             Some(op)
@@ -266,7 +267,8 @@ where
         integrate_main_eqn: bool,
         config: BdfConfig<Eqn::T>,
     ) -> Result<Self, DiffsolError> {
-        let mut nonlinear_solver = NewtonNonlinearSolver::new(linear_solver, NoLineSearch);
+        let mut nonlinear_solver =
+            NewtonNonlinearSolver::new(linear_solver, BacktrackingLineSearch::default());
         // kappa values for difference orders, taken from Table 1 of [1]
         let kappa: [Eqn::T; 6] = [
             Eqn::T::zero(),

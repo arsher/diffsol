@@ -1340,6 +1340,7 @@ where
         let integrate_out = problem.integrate_out;
         let integrate_sens = self.s_op.is_some();
         let old_num_error_test_failures = self.statistics.number_of_error_test_failures;
+        let old_num_nonlinear_solver_fails = self.statistics.number_of_nonlinear_solver_fails;
 
         let mut convergence_fail = false;
         let mut last_recoverable_error = None;
@@ -1447,13 +1448,13 @@ where
                         None => {}
                     }
                     self.statistics.number_of_nonlinear_solver_fails += 1;
-                    if self.statistics.number_of_nonlinear_solver_fails
-                        > self.config.maximum_newton_fails
-                    {
+                    let failures_this_step = self.statistics.number_of_nonlinear_solver_fails
+                        - old_num_nonlinear_solver_fails;
+                    if failures_this_step > self.config.maximum_newton_fails {
                         return Err(last_recoverable_error.unwrap_or_else(|| {
                             DiffsolError::from(OdeSolverError::TooManyNonlinearSolverFailures {
                                 time: self.state.t.to_f64().unwrap(),
-                                num_failures: self.statistics.number_of_nonlinear_solver_fails,
+                                num_failures: failures_this_step,
                             })
                         }));
                     }
@@ -1996,6 +1997,25 @@ mod test {
 
         assert!(controls.rhs_calls.get() >= setup_rhs_calls + 2);
         assert!(controls.jacobian_calls.get() >= setup_jacobian_calls + 2);
+    }
+
+    #[test]
+    fn bdf_applies_the_nonlinear_failure_budget_to_each_step() {
+        let (mut problem, controls) = rhs_jacobian_failure_problem();
+        problem.ode_options.threshold_to_update_rhs_jacobian = 10.0;
+        problem.ode_options.max_nonlinear_solver_failures = 2;
+        let mut solver = problem.bdf::<LS>().unwrap();
+
+        for _ in 0..3 {
+            controls.rhs_failures_remaining.set(1);
+            controls
+                .jacobian_error_kind
+                .set(Some(OperatorErrorKind::Recoverable));
+            controls.jacobian_failures_remaining.set(Some(1));
+            solver.step().unwrap();
+        }
+
+        assert_eq!(solver.get_statistics().number_of_nonlinear_solver_fails, 6);
     }
 
     #[test]
